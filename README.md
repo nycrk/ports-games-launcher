@@ -14,11 +14,14 @@
 
   <br />
 
-  [🌐 Sitio Web Oficial](https://ports-games.com) • [📥 Descargar Launcher](#-descargas-y-uso-rápido) • [🚀 Características](#-características-principales) • [⚖️ Aviso Legal](#-aviso-legal-y-filosofía-del-proyecto)
+  **[ 🇪🇸 Versión en Español ](#-español)** • **[ 🇬🇧 English Version ](#-english)**  
+  [🌐 ports-games.com](https://ports-games.com) • [📥 Descargas / Download](https://github.com/nycrk/ports-games-launcher/releases)
 
 </div>
 
 ---
+
+# 🇪🇸 Español
 
 ## 📖 Acerca del Proyecto
 
@@ -81,8 +84,73 @@ El launcher es **100% portable**. No requiere instalación; solo descargas, desc
 
 ---
 
-## 🌐 Enlaces y Comunidad
+<br />
 
-* **Sitio Web Oficial**: [https://ports-games.com](https://ports-games.com)
-* **Reporte de Problemas o Sugerencias**: [GitHub Issues](https://github.com/nycrk/ports-games-launcher/issues)
-* **Comunidad**: Hecho por y para la comunidad de entusiastas de los ports de videojuegos.
+# 🇬🇧 English
+
+## 📖 About the Project
+
+**Ports-Games Launcher** is a desktop application designed to discover, organize, and launch classic game ports, community engine reimplementations, and decompilations on your PC.
+
+We regularly maintain and update our database with the latest ports and emulators, continuously introducing and implementing new titles. With the launcher, you can browse the full catalog, link your installed games, manage files from your legitimate copies, and organize mods simply and centrally.
+
+Visit our official web platform: **[https://ports-games.com](https://ports-games.com)**
+
+---
+
+## 📥 Downloads & Quick Start
+
+The launcher is **100% portable**. No installation required; simply download, extract, and play.
+
+### Download Links:
+* 🚀 **[Direct Download: Game-Ports-Portable-1.0.0-win-x64.zip (v1.0.0)](https://github.com/nycrk/ports-games-launcher/releases/download/v1.0.0/Game-Ports-Portable-1.0.0-win-x64.zip)** *(57.5 MB)*
+* 📦 **[View All Versions on GitHub Releases](https://github.com/nycrk/ports-games-launcher/releases)**
+* 🌐 **[Download from Official Website (ports-games.com)](https://ports-games.com)**
+
+### How to Use:
+1. Download the `.zip` archive.
+2. Extract it into any folder on your computer.
+3. Open `GamePorts.exe` and start exploring your games.
+
+---
+
+## ✨ Key Features
+
+* 🎮 **Comprehensive & Organized Catalog**: Browse hundreds of projects categorized by console/origin (N64, PS1, Xbox, Saturn, PC, Arcade, etc.) and compatible platforms.
+* 🔍 **Real-Time Search & Filters**: Instantly find any game with the built-in search bar and filter by status, system, or recommendations.
+* 🔄 **Always Up to Date**: Automatically receive the newest additions, projects, and ports as they are added by the community.
+* 🌍 **Instant Language Switching**: Toggle between **Spanish** and **English** at any time from settings or using the top header button.
+* 📁 **Game & Backup Management**:
+  - One-click linking of your local executables.
+  - Guided setup for original game data whenever a port requires it.
+  - Integrated utility for automatic disc image (ISO) extraction.
+* 🧩 **Mod Management**: Install, enable, or disable mods cleanly without altering original game files.
+* 🎨 **Visual Customization**:
+  - Dark and Light themes.
+  - Customizable accent color with visual picker and HEX input.
+  - Card view formats (Landscape, Portrait cover style, or Table view).
+
+---
+
+## 💻 System Requirements
+
+* **Operating System**: Windows 10 or Windows 11 (64-bit).
+* **Storage**: 120 MB free space for the portable launcher.
+
+---
+
+## ⚖️ Legal Notice & Project Philosophy
+
+> [!IMPORTANT]
+> **Ports-Games does not distribute ROMs, commercial disc images, proprietary assets, or copyrighted material.**
+
+* This project is a catalog manager that connects users with official open-source repositories, releases, and tools created by the community.
+* For ports requiring original game data (audio, textures, 3D models, level data), users must own a legitimate copy of the game and provide their own files through the supported linking and extraction tools.
+
+---
+
+## 🌐 Links & Community
+
+* **Official Website**: [https://ports-games.com](https://ports-games.com)
+* **Bug Reports & Feedback**: [GitHub Issues](https://github.com/nycrk/ports-games-launcher/issues)
+* **Community**: Created by and for the gaming preservation and porting community.
