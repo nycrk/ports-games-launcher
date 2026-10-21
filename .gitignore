@@ -1,0 +1,32 @@
+# Source code & private tools (Distribution repository - Source is kept private)
+src/
+tools/
+installer/
+*.ps1
+
+# Build & Publish outputs
+[Bb]in/
+[Oo]bj/
+publish/
+dist/
+
+# Cryptographic Keys (STRICT: Never commit private keys or certificates)
+*.pem
+*.key
+*.pfx
+*.p12
+catalog_private_key.pem
+catalog_public_key.pem
+
+# Plaintext catalogs (only encrypted catalog.dat is published)
+catalog.json
+*.json.sig
+
+# IDE & OS files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+[Dd]esktop.ini
