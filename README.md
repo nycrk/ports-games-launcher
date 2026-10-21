@@ -14,7 +14,7 @@
 
   <br />
 
-  [🌐 Sitio Web Oficial](https://ports-games.com) • [📥 Descargar Launcher Portable](#-descargas-y-uso-rápido) • [🚀 Características](#-características-principales) • [⚖️ Aviso Legal](#-aviso-legal-y-filosofía-del-proyecto)
+  [🌐 Sitio Web Oficial](https://ports-games.com) • [📥 Descargar Launcher](#-descargas-y-uso-rápido) • [🚀 Características](#-características-principales) • [⚖️ Aviso Legal](#-aviso-legal-y-filosofía-del-proyecto)
 
 </div>
 
@@ -22,9 +22,9 @@
 
 ## 📖 Acerca del Proyecto
 
-**Ports-Games Launcher** es una aplicación de escritorio nativa para Windows (x64) diseñada para descubrir, organizar y ejecutar ports comunitarios, reimplementaciones de motores clásicos y descompilaciones de videojuegos en un solo lugar.
+**Ports-Games Launcher** es una aplicación de escritorio diseñada para descubrir, organizar y lanzar ports de juegos clásicos, proyectos comunitarios y descompilaciones en tu computadora.
 
-Mantenemos nuestra información y base de datos actualizada periódicamente con los ports y herramientas más recientes de la comunidad, permitiendo vincular instalaciones locales, configurar archivos de tus copias legítimas y gestionar mods de forma segura y centralizada.
+Mantenemos la información y nuestra base de datos actualizada periódicamente a los ports y emuladores más recientes, añadiendo e implementando nuevos títulos continuamente. Con el launcher puedes explorar el catálogo completo, vincular tus juegos instalados, organizar archivos de tus copias legítimas y gestionar mods de forma simple y centralizada.
 
 Visita nuestra plataforma web oficial: **[https://ports-games.com](https://ports-games.com)**
 
@@ -32,53 +32,42 @@ Visita nuestra plataforma web oficial: **[https://ports-games.com](https://ports
 
 ## 📥 Descargas y Uso Rápido
 
-El launcher se distribuye como un paquete **100% portable y autocontenido**. No requiere instalación ni tener .NET previamente instalado en Windows.
+El launcher es **100% portable**. No requiere instalación; solo descargas, descomprimes y juegas.
 
 ### Enlaces de Descarga:
 * 🚀 **[Descarga Directa: Game-Ports-Portable-1.0.0-win-x64.zip (v1.0.0)](https://github.com/nycrk/ports-games-launcher/releases/download/v1.0.0/Game-Ports-Portable-1.0.0-win-x64.zip)** *(57.5 MB)*
 * 📦 **[Ver todas las versiones en GitHub Releases](https://github.com/nycrk/ports-games-launcher/releases)**
 * 🌐 **[Descargar desde la Web Oficial (ports-games.com)](https://ports-games.com)**
 
-### Instrucciones:
+### ¿Cómo usarlo?
 1. Descarga el archivo `.zip`.
-2. Descomprímelo en cualquier carpeta de tu preferencia (ejemplo: `C:\Juegos\Ports-Games`).
-3. Ejecuta `GamePorts.exe` y ¡listo para jugar!
+2. Descomprímelo en la carpeta que quieras de tu computadora.
+3. Abre `GamePorts.exe` y empieza a explorar tus juegos.
 
 ---
 
 ## ✨ Características Principales
 
-* 🎮 **Catálogo Inteligente**: Cientos de proyectos clasificados por consola/origen (N64, PS1, Xbox, Saturn, PC, Arcade, etc.) y plataforma de ejecución.
-* 🔐 **Seguridad Criptográfica**: Catálogo cifrado con **AES-256-GCM** y firmado digitalmente mediante **ECDSA P-256 (SHA-256)** para garantizar su integridad.
-* ⚡ **Alto Rendimiento**: Binario autocontenido optimizado con **ReadyToRun (R2R)** y bajo consumo de memoria RAM.
-* 🌍 **Multilenguaje en Caliente**: Conmutación instantánea entre **Español** e **Inglés** en toda la interfaz sin necesidad de reiniciar el launcher.
-* 📦 **Gestión de Datos y Extracción de ISOs**:
-  - Detección guiada de archivos requeridos.
-  - Integración con utilidad segura de extracción de ISOs de Xbox (`extract-xiso`).
-  - Vinculación de ejecutables locales en un clic.
-* 🧩 **Gestor de Mods Integrado**: Importa y activa o desactiva mods por carpetas o archivos sin alterar la instalación original.
-* 🎨 **Personalización Visual**:
-  - Modo Oscuro / Claro.
-  - Color de acento personalizable con paleta visual y código HEX.
-  - Formato de tarjetas (Horizontal clásico o Vertical estilo portada).
-  - Vista de Tarjetas o Vista de Tabla con metadatos técnicos.
+* 🎮 **Catálogo Completo y Organizado**: Explora cientos de títulos ordenados por su consola de origen (N64, PS1, Xbox, Saturn, PC, Arcade, etc.) y plataformas compatibles.
+* 🔍 **Búsqueda y Filtros en Tiempo Real**: Encuentra cualquier juego al instante con el buscador integrado y filtra por estado, sistema o recomendaciones.
+* 🔄 **Catálogo Siempre Actualizado**: Recibe automáticamente las últimas novedades, proyectos y ports que se van incorporando a la comunidad.
+* 🌍 **Multilenguaje al Instante**: Cambia de idioma entre **Español** e **Inglés** en cualquier momento desde los ajustes o con el botón superior.
+* 📁 **Gestor de Juegos y Copias de Seguridad**:
+  - Vinculación de tus ejecutables locales en un solo clic.
+  - Asistente para configurar los archivos de tus copias originales cuando un port lo requiera.
+  - Herramienta para extraer imágenes de disco ISO automáticamente.
+* 🧩 **Gestión de Mods**: Instala, activa o desactiva mods para tus juegos de forma ordenada sin dañar los archivos originales.
+* 🎨 **Personalización a tu Gusto**:
+  - Temas visuales Oscuro y Claro.
+  - Personalización del color de acento.
+  - Vistas de tarjeta horizontal, vertical tipo portada o lista en tabla.
 
 ---
 
-## 📁 Contenido del Paquete Portable
+## 💻 Requisitos del Sistema
 
-El archivo comprimido oficial incluye exclusivamente los componentes legítimos necesarios para su ejecución en Windows x64:
-
-| Archivo / Carpeta | Descripción |
-| :--- | :--- |
-| `GamePorts.exe` | Ejecutable principal optimizado con tecnología nativa x64 |
-| `catalog.dat` | Catálogo base cifrado y validado con firma criptográfica |
-| `logo.png` | Identidad visual e icono de alta resolución |
-| `libSkiaSharp.dll` | Renderizado gráfico 2D acelerado |
-| `libHarfBuzzSharp.dll` | Motor tipográfico y texto de alta nitidez |
-| `av_libglesv2.dll` | Biblioteca de aceleración gráfica por hardware |
-| `Tools/extract-xiso.exe` | Herramienta integrada para extracción de copias de seguridad ISO |
-| `Tools/extract-xiso-LICENSE.txt` | Licencia de la herramienta auxiliar |
+* **Sistema Operativo**: Windows 10 o Windows 11 (64-bit).
+* **Espacio en Disco**: 120 MB libres para el launcher portable.
 
 ---
 
@@ -87,7 +76,7 @@ El archivo comprimido oficial incluye exclusivamente los componentes legítimos 
 > [!IMPORTANT]
 > **Ports-Games no distribuye ROMs, imágenes de disco comerciales, assets propietarios ni material protegido por derechos de autor.**
 
-* Este proyecto es un gestor de catálogo que facilita la conexión con los repositorios, releases y herramientas de los autores de la comunidad.
+* Este proyecto es un gestor de catálogo que facilita la conexión con los repositorios, releases y herramientas oficiales desarrolladas por la comunidad.
 * Para los ports que requieren archivos del juego original (música, texturas, modelos, niveles), el usuario debe poseer una copia legítima del videojuego y suministrar sus propios archivos mediante los métodos de extracción y vinculación soportados.
 
 ---
