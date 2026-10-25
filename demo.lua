@@ -30,6 +30,7 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 local canWrite = (type(writefile) == "function")
@@ -39,6 +40,7 @@ local State = {
     running = true,
     isUnderground = false,
     subPlatform = nil,
+    subPlatformFollow = nil,
     savedPoints = {},
     allZones = {},
     rotatingLastZone = {
@@ -106,6 +108,53 @@ end
 -- ========================================================================
 -- PLATAFORMA SEGURA DE SUBSUELO (ANTI-CAÍDA / ANTI-VACÍO)
 -- ========================================================================
+-- La plataforma sigue al jugador en X/Z antes de cada paso de física. Por eso
+-- no tiene distancia máxima de caminata: no se queda en el punto inicial.
+local function stopSubfloorPlatform()
+    if State.subPlatformFollow then
+        State.subPlatformFollow:Disconnect()
+        State.subPlatformFollow = nil
+    end
+    if State.subPlatform and State.subPlatform.Parent then
+        State.subPlatform:Destroy()
+    end
+    State.subPlatform = nil
+end
+
+local function startSubfloorPlatformFollow()
+    if State.subPlatformFollow then
+        State.subPlatformFollow:Disconnect()
+        State.subPlatformFollow = nil
+    end
+
+    -- PreSimulation ocurre antes de la física. Heartbeat es el respaldo para
+    -- clientes que no expongan ese evento.
+    local followSignal = RunService.PreSimulation or RunService.Heartbeat
+    State.subPlatformFollow = followSignal:Connect(function()
+        local platform = State.subPlatform
+        if not State.isUnderground or not platform or not platform.Parent then
+            if State.subPlatformFollow then
+                State.subPlatformFollow:Disconnect()
+                State.subPlatformFollow = nil
+            end
+            return
+        end
+
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then
+            return
+        end
+
+        -- Mantiene la altura del piso y centra la superficie bajo el jugador.
+        -- Así puedes caminar todo lo que quieras mientras sigas en subsuelo.
+        local desired = Vector3.new(root.Position.X, platform.Position.Y, root.Position.Z)
+        if (platform.Position - desired).Magnitude > 0.05 then
+            platform.CFrame = CFrame.new(desired)
+        end
+    end)
+end
+
 local function enterSubfloorSafe()
     local char = LocalPlayer.Character
     if not char then return false, "Sin Personaje" end
@@ -113,32 +162,33 @@ local function enterSubfloorSafe()
     if not root then return false, "Sin RootPart" end
 
     local curPos = root.Position
-    local floorY, _ = getFloorY(curPos)
     local targetY = -3.50 -- Nivel debajo del Baseplate
 
-    -- Limpiar plataforma previa si existiera
-    if State.subPlatform and State.subPlatform.Parent then
-        State.subPlatform:Destroy()
-        State.subPlatform = nil
-    end
+    -- Elimina una plataforma/conexión anterior antes de iniciar una nueva.
+    stopSubfloorPlatform()
 
-    -- Crear plataforma sólida local de 12x1x12 studs para pararte encima
+    -- Es amplia como margen adicional, pero el seguimiento continuo es lo que
+    -- evita que desaparezca o quede atrás cuando caminas.
     local plat = Instance.new("Part")
     plat.Name = "Dev_Plataforma_Soporte_Subsuelo"
-    plat.Size = Vector3.new(12, 1, 12)
-    plat.Position = Vector3.new(curPos.X, targetY - 2.5, curPos.Z)
+    plat.Size = Vector3.new(48, 1, 48)
+    plat.CFrame = CFrame.new(curPos.X, targetY - 2.5, curPos.Z)
     plat.Anchored = true
     plat.CanCollide = true
+    plat.CanQuery = true
+    plat.CanTouch = true
     plat.Material = Enum.Material.Neon
     plat.Color = Color3.fromRGB(0, 220, 255)
     plat.Transparency = 0.35
+    plat.CastShadow = false
     plat.Parent = Workspace
 
     State.subPlatform = plat
     State.isUnderground = true
 
-    -- Mover al jugador de forma segura encima de la plataforma
+    -- Mover al jugador de forma segura encima de la plataforma.
     root.CFrame = CFrame.new(curPos.X, targetY, curPos.Z)
+    startSubfloorPlatformFollow()
     return true, targetY
 end
 
@@ -149,17 +199,17 @@ local function exitSubfloorSafe()
     if not root then return false end
 
     local curPos = root.Position
-    local targetY = 3.50 -- Regresar sobre el Baseplate
-
-    if State.subPlatform and State.subPlatform.Parent then
-        State.subPlatform:Destroy()
-        State.subPlatform = nil
-    end
-
     State.isUnderground = false
-    root.CFrame = CFrame.new(curPos.X, targetY, curPos.Z)
-    return true, targetY
+    stopSubfloorPlatform()
+    root.CFrame = CFrame.new(curPos.X, 3.50, curPos.Z)
+    return true, 3.50
 end
+
+-- No deja plataformas o conexiones huérfanas después de reaparecer.
+LocalPlayer.CharacterAdded:Connect(function()
+    State.isUnderground = false
+    stopSubfloorPlatform()
+end)
 
 -- ========================================================================
 -- DETECTAR ÚLTIMA ZONA ROTATIVA
@@ -499,9 +549,8 @@ local function buildGUI()
     closeBtn.Parent = header
     closeBtn.MouseButton1Click:Connect(function()
         State.running = false
-        if State.subPlatform and State.subPlatform.Parent then
-            State.subPlatform:Destroy()
-        end
+        State.isUnderground = false
+        stopSubfloorPlatform()
         sg:Destroy()
     end)
 
@@ -878,3 +927,5 @@ local function buildGUI()
 end
 
 buildGUI()
+
+
