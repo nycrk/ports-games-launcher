@@ -1,547 +1,682 @@
 --[[
-    Auditoría pasiva del cliente Roblox (Luau / Delta)
-
-    Uso autorizado: ejecútalo únicamente en experiencias que controles o para
-    las que tengas autorización expresa. No decompila ni copia Source de scripts,
-    no intercepta tráfico y no modifica instancias del juego. Sólo inventaría lo
-    que el cliente ya puede ver y guarda un informe local.
-
-    Limitación importante: los ServerScriptService, ServerStorage y las
-    validaciones del servidor no son auditables desde un cliente. Una ausencia
-    en este informe nunca prueba que exista o no exista una protección.
+    ========================================================================
+    PANEL DE DESARROLLO: DETECCIÓN DE ZONAS ROTATIVAS, HUEVOS Y MARCADOR DE PISO
+    ========================================================================
+    Diseñado para pruebas locales en Roblox Luau / Delta.
+    
+    Funcionalidades:
+    1. ZONA FINAL ROTATIVA:
+       - Detecta si la última zona activa es "Hero's Base" (Hero Egg) o 
+         "Villain's Hideout" (Evil Egg), o la zona tras "Great Sun".
+       - Muestra en la GUI el nombre de la zona activa y qué huevo contiene.
+    2. LOCALIZADOR DE HUEVOS & GODLY EGG:
+       - Mapea 'Workspace.Eggs' y busca 'GodlyEgg' y demás huevos de las zonas.
+    3. DETECTOR DE NIVEL DEL PISO (RAYCASTING):
+       - Calcula la coordenada exacta donde estás parado y la altura real 
+         del suelo (piso Y) debajo de tus pies mediante Raycast.
+    4. BOTÓN "GUARDAR / MARCAR COORDENADA":
+       - Guarda las coordenadas actuales (X, Y, Z + Piso Y).
+       - Crea una baliza / marcador 3D visual en el mundo.
+       - Guarda el historial en 'coordenadas_guardadas.txt' (writefile).
+       - Botón para copiar al portapapeles si Delta lo soporta.
+    5. DETECCIÓN DE EVENTO HALLOWEEN:
+       - Conteo y ubicación de Fuegos y Calabazas.
+    ========================================================================
 ]]
 
 local Players = game:GetService("Players")
-local HttpService = game:GetService("HttpService")
-local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+
 local LocalPlayer = Players.LocalPlayer
+local canWrite = (type(writefile) == "function")
+local canCopy = (type(setclipboard) == "function")
 
-local SETTINGS = {
-    outputFolder = "Roblox_Auditoria_Cliente",
-    checkpointEvery = 250,     -- guarda avances cada N instancias exploradas
-    maxListedItems = 20000,    -- evita informes inutilizables en juegos muy grandes
-    valuePreviewLength = 180,
+-- Estado global
+local State = {
+    savedPoints = {},
+    lastScannedEggs = {},
+    activeLastZone = { name = "Detectando...", egg = "Desconocido", details = "" },
+    godlyStatus = "Buscando...",
+    halloweenStatus = { fires = 0, pumpkins = 0 },
+    markersFolder = nil
 }
 
-local state = {
-    running = false,
-    allLines = {},
-    pendingLines = {},
-    reportPath = nil,
-    reportId = nil,
-    canWrite = type(writefile) == "function",
-    canAppend = type(appendfile) == "function",
-    ui = {},
-}
-
-local function nowForFile()
-    return os.date("!%Y-%m-%d_%H-%M-%S")
-end
-
-local function timestamp()
-    return os.date("!%Y-%m-%d %H:%M:%S UTC")
-end
-
-local function oneLine(value)
-    value = tostring(value or "")
-    value = value:gsub("[\r\n\t]", " ")
-    value = value:gsub("%s+", " ")
-    return value
-end
-
-local function getPath(instance)
-    local ok, path = pcall(function()
-        return instance:GetFullName()
-    end)
-    return ok and path or ("<ruta no disponible: " .. oneLine(instance.Name) .. ">")
-end
-
-local function setStatus(text, color)
-    if state.ui.status then
-        state.ui.status.Text = text
-        if color then
-            state.ui.status.TextColor3 = color
+-- Carpeta para balizas 3D en Workspace
+local function getMarkersFolder()
+    if not State.markersFolder or not State.markersFolder.Parent then
+        local folder = Workspace:FindFirstChild("Dev_Marcadores_Piso")
+        if not folder then
+            folder = Instance.new("Folder")
+            folder.Name = "Dev_Marcadores_Piso"
+            folder.Parent = Workspace
         end
+        State.markersFolder = folder
     end
+    return State.markersFolder
 end
 
-local function writeRaw(path, text)
-    if not state.canWrite then
-        return false, "writefile no está disponible en este entorno"
-    end
-    local ok, err = pcall(writefile, path, text)
-    return ok, err
+-- ========================================================================
+-- FUNCIONES MATEMÁTICAS / FÍSICAS (POSICIÓN Y NIVEL DEL SUELO)
+-- ========================================================================
+local function getPlayerPos()
+    local char = LocalPlayer.Character
+    if not char then return Vector3.zero end
+    local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head")
+    return root and root.Position or Vector3.zero
 end
 
-local function ensureFolder()
-    if not state.canWrite then
-        return false
+-- Detección precisa de la superficie del piso con Raycast
+local function getFloorDetails(pos)
+    local char = LocalPlayer.Character
+    if not char or not pos then return nil, nil end
+
+    local rayOrigin = pos + Vector3.new(0, 1.5, 0)
+    local rayDir = Vector3.new(0, -60, 0)
+
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {char, getMarkersFolder()}
+    params.FilterType = RaycastFilterType.Exclude
+
+    local result = Workspace:Raycast(rayOrigin, rayDir, params)
+    if result then
+        return result.Position, result.Instance
     end
-    if type(makefolder) == "function" then
-        local exists = false
-        if type(isfolder) == "function" then
+    return nil, nil
+end
+
+local function formatVec(v)
+    if not v then return "N/A" end
+    return string.format("X: %.2f, Y: %.2f, Z: %.2f", v.X, v.Y, v.Z)
+end
+
+-- ========================================================================
+-- DETECTAR ÚLTIMA ZONA ROTATIVA (Hero's Base vs Villain's Hideout vs Sun)
+-- ========================================================================
+local function detectRotatingLastZone()
+    local lastZoneInfo = {
+        name = "No identificada",
+        egg = "Ninguno",
+        details = ""
+    }
+
+    -- 1. Consultar módulos de configuración en ReplicatedStorage
+    local heroEvilCfg = nil
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    if modules then
+        local heMod = modules:FindFirstChild("HeroAndEvilConfigurations")
+        if heMod and heMod:IsA("ModuleScript") then
             pcall(function()
-                exists = isfolder(SETTINGS.outputFolder)
+                heroEvilCfg = require(heMod)
             end)
         end
-        if not exists then
-            -- Si la carpeta ya existe, la mayoría de ejecutores devuelven un
-            -- error inofensivo; el writefile posterior confirma el resultado.
-            pcall(makefolder, SETTINGS.outputFolder)
+    end
+
+    -- 2. Inspeccionar Workspace.Eggs y Workspace general para ver cuál está instanciada
+    local eggsFolder = Workspace:FindFirstChild("Eggs")
+    local foundHero = false
+    local foundEvil = false
+    local foundSun = false
+    local heroEggs = {}
+    local evilEggs = {}
+
+    if eggsFolder then
+        for _, zoneFolder in ipairs(eggsFolder:GetChildren()) do
+            local zName = zoneFolder.Name:lower()
+
+            if zName:match("hero") then
+                foundHero = true
+                for _, d in ipairs(zoneFolder:GetDescendants()) do
+                    if d.Name:lower():match("egg") or d:IsA("Model") then
+                        table.insert(heroEggs, d.Name)
+                    end
+                end
+            elseif zName:match("evil") or zName:match("villain") then
+                foundEvil = true
+                for _, d in ipairs(zoneFolder:GetDescendants()) do
+                    if d.Name:lower():match("egg") or d:IsA("Model") then
+                        table.insert(evilEggs, d.Name)
+                    end
+                end
+            elseif zName:match("sun") then
+                foundSun = true
+            end
         end
     end
-    return true
-end
 
-local function flushAuto(reason)
-    if #state.pendingLines == 0 then
-        return
-    end
-    if not state.reportPath or not state.canWrite then
-        return
-    end
-
-    local chunk = table.concat(state.pendingLines, "\n") .. "\n"
-    local ok
-    if state.canAppend then
-        ok = pcall(appendfile, state.reportPath, chunk)
-    end
-    if not ok then
-        -- Algunos ejecutores sólo exponen writefile. Reescribir el informe completo
-        -- o fallan en appendfile conserva todo lo registrado hasta el último punto.
-        ok = pcall(writefile, state.reportPath, table.concat(state.allLines, "\n") .. "\n")
-    end
-    if ok then
-        table.clear(state.pendingLines)
-    end
-end
-
-local function log(line)
-    line = oneLine(line)
-    table.insert(state.allLines, line)
-    table.insert(state.pendingLines, line)
-end
-
-local function beginReport()
-    state.allLines = {}
-    state.pendingLines = {}
-    state.reportId = nowForFile() .. "_" .. string.sub(HttpService:GenerateGUID(false):gsub("-", ""), 1, 8)
-    state.reportPath = SETTINGS.outputFolder .. "/auditoria_cliente_" .. state.reportId .. ".txt"
-
-    log("============================================================")
-    log("AUDITORÍA PASIVA DEL CLIENTE ROBLOX")
-    log("Inicio: " .. timestamp())
-    log("Jugador local: " .. oneLine(LocalPlayer and LocalPlayer.Name or "no disponible"))
-    log("Lugar: " .. tostring(game.PlaceId) .. " | JobId: " .. oneLine(game.JobId))
-    log("Alcance: instancias y metadatos visibles por este cliente.")
-    log("No se lee Source, no se decompila código, no se altera el juego.")
-    log("ADVERTENCIA: este informe no puede confirmar seguridad del servidor.")
-    log("============================================================")
-
-    if ensureFolder() then
-        local ok, err = writeRaw(state.reportPath, table.concat(state.allLines, "\n") .. "\n")
-        if ok then
-            table.clear(state.pendingLines)
-            return true
+    -- Búsqueda adicional en el mapa general por si la zona se carga fuera de Workspace.Eggs
+    if not foundHero and not foundEvil then
+        for _, obj in ipairs(Workspace:GetChildren()) do
+            local oName = obj.Name:lower()
+            if oName:match("hero") then
+                foundHero = true
+            elseif oName:match("villain") or oName:match("evil") then
+                foundEvil = true
+            end
         end
-        log("[AVISO] No se pudo crear el archivo inicial: " .. oneLine(err))
+    end
+
+    -- Determinar estado actual
+    if foundHero and not foundEvil then
+        lastZoneInfo.name = "Hero's Base (Héroes)"
+        lastZoneInfo.egg = "Hero Egg"
+        lastZoneInfo.details = "Rotación activa: Bando Heroico"
+    elseif foundEvil and not foundHero then
+        lastZoneInfo.name = "Villain's Hideout (Villanos)"
+        lastZoneInfo.egg = "Evil Egg"
+        lastZoneInfo.details = "Rotación activa: Bando Villano"
+    elseif foundHero and foundEvil then
+        lastZoneInfo.name = "Hero's Base & Villain's Hideout"
+        lastZoneInfo.egg = "Hero Egg / Evil Egg"
+        lastZoneInfo.details = "Ambas zonas presentes en Workspace"
+    elseif foundSun then
+        lastZoneInfo.name = "Great Sun Zone"
+        lastZoneInfo.egg = "Sun Egg"
+        lastZoneInfo.details = "Zona previa a la rotación activa"
     else
-        log("[AVISO] Guardado local no disponible; el informe sólo existirá mientras el cliente siga abierto.")
-    end
-    return false
-end
-
-local noisyClasses = {
-    Part = true, MeshPart = true, UnionOperation = true, Terrain = true,
-    Decal = true, Texture = true, Attachment = true, Bone = true,
-    Sound = true, ParticleEmitter = true, Trail = true, Beam = true,
-    SpecialMesh = true, WrapLayer = true, WrapTarget = true,
-}
-
-local relevantClasses = {
-    RemoteEvent = "REMOTE_EVENT",
-    RemoteFunction = "REMOTE_FUNCTION",
-    UnreliableRemoteEvent = "UNRELIABLE_REMOTE",
-    BindableEvent = "BINDABLE_EVENT",
-    BindableFunction = "BINDABLE_FUNCTION",
-    ModuleScript = "MODULE_VISIBLE",
-    LocalScript = "LOCAL_SCRIPT_META",
-    Script = "SCRIPT_META",
-    Configuration = "CONFIGURATION",
-    BoolValue = "CONFIG_VALUE",
-    NumberValue = "CONFIG_VALUE",
-    IntValue = "CONFIG_VALUE",
-    StringValue = "CONFIG_VALUE",
-    ObjectValue = "OBJECT_REFERENCE",
-    Folder = "FOLDER_FLAGGED",
-}
-
-local function suspiciousName(name)
-    local lower = string.lower(name)
-    return lower:find("honeypot", 1, true)
-        or lower:find("decoy", 1, true)
-        or lower:find("canary", 1, true)
-        or lower:find("trap", 1, true)
-        or lower:find("bait", 1, true)
-end
-
-local function sensitiveName(name)
-    local lower = string.lower(name)
-    return lower:find("password", 1, true)
-        or lower:find("secret", 1, true)
-        or lower:find("token", 1, true)
-        or lower:find("apikey", 1, true)
-        or lower:find("api_key", 1, true)
-end
-
-local function previewValue(instance)
-    if sensitiveName(instance.Name) then
-        return "<oculto: nombre sensible>"
-    end
-    local ok, value = pcall(function()
-        return instance.Value
-    end)
-    if not ok then
-        return "<no legible>"
-    end
-    if typeof(value) == "Instance" then
-        return value and getPath(value) or "nil"
-    end
-    local text = oneLine(value)
-    if #text > SETTINGS.valuePreviewLength then
-        text = string.sub(text, 1, SETTINGS.valuePreviewLength) .. "…"
-    end
-    return text
-end
-
-local function attributeNames(instance)
-    local ok, attributes = pcall(function()
-        return instance:GetAttributes()
-    end)
-    if not ok then
-        return ""
-    end
-    local names = {}
-    for name in pairs(attributes) do
-        table.insert(names, name)
-    end
-    table.sort(names)
-    return #names > 0 and (" | atributos=" .. table.concat(names, ",")) or ""
-end
-
-local function includeInstance(instance)
-    if relevantClasses[instance.ClassName] then
-        if instance:IsA("Folder") then
-            return suspiciousName(instance.Name) or instance:GetAttribute("SecurityRelevant") == true
-        end
-        return true
-    end
-    if noisyClasses[instance.ClassName] then
-        return false
-    end
-    return suspiciousName(instance.Name)
-end
-
-local function describeInstance(instance, rootLabel)
-    local tag = relevantClasses[instance.ClassName] or "NOMBRE_SOSPECHOSO"
-    local extras = attributeNames(instance)
-
-    if suspiciousName(instance.Name) then
-        extras = extras .. " | POSIBLE_SEÑUELO_POR_NOMBRE=true"
-    end
-
-    if instance:IsA("ValueBase") then
-        extras = extras .. " | valor=" .. previewValue(instance)
-    elseif instance:IsA("BaseScript") then
-        local ok, disabled = pcall(function()
-            return instance.Disabled
-        end)
-        extras = extras .. " | disabled=" .. tostring(ok and disabled or "no legible")
-    elseif instance:IsA("ObjectValue") then
-        extras = extras .. " | destino=" .. previewValue(instance)
-    end
-
-    return string.format("[%s] raíz=%s | clase=%s | ruta=%s%s", tag, rootLabel, instance.ClassName, getPath(instance), extras)
-end
-
-local function getService(name)
-    local ok, service = pcall(game.GetService, game, name)
-    return ok and service or nil
-end
-
-local function addLoadedModules(summary)
-    if type(getloadedmodules) ~= "function" then
-        log("[INFO] getloadedmodules no está disponible; sólo se listan ModuleScripts visibles.")
-        return
-    end
-
-    local ok, modules = pcall(getloadedmodules)
-    if not ok or type(modules) ~= "table" then
-        log("[AVISO] No se pudieron consultar módulos cargados en el cliente.")
-        return
-    end
-
-    local unique = {}
-    for _, module in ipairs(modules) do
-        if typeof(module) == "Instance" and module:IsA("ModuleScript") then
-            unique[module] = true
+        -- Comprobar si hay alguna zona nombrada como última (ej. Zone8)
+        if eggsFolder and eggsFolder:FindFirstChild("Zone8") then
+            lastZoneInfo.name = "Zone 8 (Última Zona)"
+            lastZoneInfo.egg = "Rotativo / Especial"
+            lastZoneInfo.details = "Detectada carpeta Zone8 en Workspace.Eggs"
+        else
+            lastZoneInfo.name = "Esperando rotación"
+            lastZoneInfo.egg = "N/A"
+            lastZoneInfo.details = "No se detectaron zonas Hero/Evil activas"
         end
     end
+
+    State.activeLastZone = lastZoneInfo
+    return lastZoneInfo
+end
+
+-- ========================================================================
+-- ESCANEAR HUEVOS Y BUSCAR GODLY EGG
+-- ========================================================================
+local function scanAllEggs()
     local list = {}
-    for module in pairs(unique) do
-        table.insert(list, getPath(module))
-    end
-    table.sort(list)
-    summary.loadedModules = #list
-    log("--- MÓDULOS CARGADOS EN ESTE CLIENTE (no representa dependencias require) ---")
-    for _, path in ipairs(list) do
-        log("[MODULE_LOADED] " .. path)
-    end
-end
+    local godlyFound = nil
+    local playerPos = getPlayerPos()
+    local eggsFolder = Workspace:FindFirstChild("Eggs")
 
-local function scanRoot(root, label, summary)
-    if not root then
-        log("[NO_DISPONIBLE] " .. label)
-        return
-    end
+    if eggsFolder then
+        for _, zFolder in ipairs(eggsFolder:GetChildren()) do
+            local zoneName = zFolder.Name
+            for _, desc in ipairs(zFolder:GetDescendants()) do
+                if desc:IsA("Model") or (desc:IsA("BasePart") and desc.Name:lower():match("egg")) then
+                    local pPart = (desc:IsA("Model") and (desc.PrimaryPart or desc:FindFirstChildWhichIsA("BasePart"))) or (desc:IsA("BasePart") and desc)
+                    if pPart then
+                        local eggName = desc.Name
+                        -- Atributos / valores
+                        local attrType = desc:GetAttribute("EggType") or desc:GetAttribute("Type")
+                        if attrType then eggName = tostring(attrType) end
 
-    local ok, descendants = pcall(function()
-        return root:GetDescendants()
-    end)
-    if not ok then
-        log("[NO_LEGIBLE] " .. label)
-        return
-    end
+                        local dist = math.floor((playerPos - pPart.Position).Magnitude)
+                        local isGodly = (eggName:lower():match("godly") ~= nil) or (desc:GetFullName():lower():match("godly") ~= nil)
 
-    log("--- RAÍZ " .. label .. " | descendientes observables=" .. tostring(#descendants) .. " ---")
-    for index, instance in ipairs(descendants) do
-        summary.examined = summary.examined + 1
-        if includeInstance(instance) then
-            if summary.listed < SETTINGS.maxListedItems then
-                log(describeInstance(instance, label))
-                summary.listed = summary.listed + 1
-            else
-                summary.truncated = true
-            end
+                        local entry = {
+                            name = eggName,
+                            zone = zoneName,
+                            pos = pPart.Position,
+                            distance = dist,
+                            isGodly = isGodly,
+                            instance = desc
+                        }
+                        table.insert(list, entry)
 
-            if instance:IsA("RemoteEvent") or instance:IsA("RemoteFunction") or instance:IsA("UnreliableRemoteEvent") then
-                summary.remotes = summary.remotes + 1
-            elseif instance:IsA("ModuleScript") then
-                summary.modules = summary.modules + 1
-            elseif instance:IsA("LocalScript") then
-                summary.localScripts = summary.localScripts + 1
-            elseif instance:IsA("ObjectValue") then
-                summary.references = summary.references + 1
-            elseif suspiciousName(instance.Name) then
-                summary.honeypotCandidates = summary.honeypotCandidates + 1
+                        if isGodly and (not godlyFound or dist < godlyFound.distance) then
+                            godlyFound = entry
+                        end
+                    end
+                end
             end
         end
+    end
 
-        if index % SETTINGS.checkpointEvery == 0 then
-            flushAuto("checkpoint")
-            setStatus(string.format("Escaneando %s: %d/%d", label, index, #descendants), Color3.fromRGB(255, 217, 102))
-            task.wait()
+    table.sort(list, function(a, b) return a.distance < b.distance end)
+    State.lastScannedEggs = list
+
+    if godlyFound then
+        State.godlyStatus = string.format("Zona: %s (%d studs)", godlyFound.zone, godlyFound.distance)
+    else
+        State.godlyStatus = "No spawneado actualmente"
+    end
+
+    return list, godlyFound
+end
+
+-- ========================================================================
+-- ESCANEAR EVENTO HALLOWEEN (FUEGOS Y CALABAZAS)
+-- ========================================================================
+local function scanHalloween()
+    local firesCount = 0
+    local pumpkinsCount = 0
+
+    for _, desc in ipairs(Workspace:GetDescendants()) do
+        if not desc:IsDescendantOf(LocalPlayer.Character) then
+            local l = desc.Name:lower()
+            if l:match("fire") or l:match("fuego") or l:match("flame") then
+                if desc:IsA("BasePart") or (desc:IsA("Model") and desc.PrimaryPart) then
+                    firesCount = firesCount + 1
+                end
+            elseif l:match("pumpkin") or l:match("calabaza") or l:match("machinepumpkin") then
+                if desc:IsA("BasePart") or (desc:IsA("Model") and desc.PrimaryPart) then
+                    pumpkinsCount = pumpkinsCount + 1
+                end
+            end
         end
     end
+
+    State.halloweenStatus.fires = firesCount
+    State.halloweenStatus.pumpkins = pumpkinsCount
+    return firesCount, pumpkinsCount
 end
 
-local function appendInterpretation(summary)
-    log("============================================================")
-    log("RESUMEN")
-    log("Instancias examinadas: " .. summary.examined)
-    log("Elementos relevantes listados: " .. summary.listed .. (summary.truncated and " (LÍMITE ALCANZADO)" or ""))
-    log("Remotes visibles: " .. summary.remotes)
-    log("ModuleScripts visibles: " .. summary.modules)
-    log("Módulos cargados en cliente: " .. (summary.loadedModules or 0))
-    log("LocalScripts visibles: " .. summary.localScripts)
-    log("Referencias ObjectValue: " .. summary.references)
-    log("Candidatos a honeypot por nombre: " .. summary.honeypotCandidates)
-    log("============================================================")
-    log("LECTURA PROFESIONAL / LÍMITES")
-    log("- Un Remote listado es una frontera cliente-servidor que debe validar tipo, rango, permisos y frecuencia EN EL SERVIDOR.")
-    log("- Un nombre como honeypot, decoy, canary, trap o bait sólo es una pista nominal; no confirma comportamiento de señuelo.")
-    log("- Un ModuleScript visible no revela quién lo require ni su código. Este informe evita recuperar Source deliberadamente.")
-    log("- Las ObjectValue muestran relaciones de datos explícitas, no conexiones de funciones ni dependencias implícitas.")
-    log("- Ausencia de ServerScriptService/ServerStorage es esperable desde cliente y no es una anomalía.")
-    log("- Para auditar validaciones y dependencias reales, exporta tu experiencia autorizada y revisa el código de servidor fuera del cliente.")
-    log("Fin: " .. timestamp())
+-- ========================================================================
+-- GUARDAR Y CREAR BALIZA 3D EN EL MUNDO
+-- ========================================================================
+local function createFloorMarker(index, charPos, floorPos, note)
+    local targetPos = floorPos or charPos
+    local folder = getMarkersFolder()
+
+    -- Cilindro base en el piso
+    local disc = Instance.new("Part")
+    disc.Name = "Marker_" .. index
+    disc.Shape = Enum.PartType.Cylinder
+    disc.Size = Vector3.new(0.4, 4, 4)
+    disc.CFrame = CFrame.new(targetPos) * CFrame.Angles(0, 0, math.rad(90))
+    disc.Anchored = true
+    disc.CanCollide = false
+    disc.Material = Enum.Material.Neon
+    disc.Color = Color3.fromRGB(0, 255, 200)
+    disc.Transparency = 0.3
+    disc.Parent = folder
+
+    -- Baliza vertical (columna de luz)
+    local beam = Instance.new("Part")
+    beam.Name = "Beam_" .. index
+    beam.Size = Vector3.new(0.3, 16, 0.3)
+    beam.Position = targetPos + Vector3.new(0, 8, 0)
+    beam.Anchored = true
+    beam.CanCollide = false
+    beam.Material = Enum.Material.Neon
+    beam.Color = Color3.fromRGB(0, 255, 200)
+    beam.Transparency = 0.5
+    beam.Parent = folder
+
+    -- Cartel flotante con datos
+    local bb = Instance.new("BillboardGui")
+    bb.Adornee = beam
+    bb.Size = UDim2.new(0, 180, 0, 48)
+    bb.StudsOffset = Vector3.new(0, 8.5, 0)
+    bb.AlwaysOnTop = true
+
+    local txt = Instance.new("TextLabel")
+    txt.Size = UDim2.new(1, 0, 1, 0)
+    txt.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+    txt.BackgroundTransparency = 0.3
+    txt.TextColor3 = Color3.fromRGB(0, 255, 220)
+    txt.Font = Enum.Font.SourceSansBold
+    txt.TextSize = 12
+    txt.Text = string.format("#%d: %s\nPiso Y: %.2f", index, note or "Punto", targetPos.Y)
+    txt.Parent = bb
+
+    bb.Parent = beam
 end
 
-local function runScan()
-    beginReport()
-    local summary = {
-        examined = 0, listed = 0, remotes = 0, modules = 0,
-        localScripts = 0, references = 0, honeypotCandidates = 0,
-        loadedModules = 0, truncated = false,
+local function saveCurrentCoordinates(noteName)
+    local pPos = getPlayerPos()
+    local floorPos, floorPart = getFloorDetails(pPos)
+    local floorY = floorPos and floorPos.Y or (pPos.Y - 3) -- aproximación si no hay hit
+
+    local item = {
+        id = #State.savedPoints + 1,
+        note = noteName or ("Punto #" .. (#State.savedPoints + 1)),
+        playerPos = pPos,
+        floorPos = floorPos or Vector3.new(pPos.X, floorY, pPos.Z),
+        floorY = floorY,
+        floorPartName = floorPart and floorPart.Name or "Aire/Nulo",
+        timestamp = os.date("%H:%M:%S")
     }
 
-    log("--- INVENTARIO DE SERVICIOS / CONEXIONES OBSERVABLES ---")
-    local roots = {
-        { "ReplicatedFirst", getService("ReplicatedFirst") },
-        { "ReplicatedStorage", getService("ReplicatedStorage") },
-        { "StarterGui", getService("StarterGui") },
-        { "StarterPlayer", getService("StarterPlayer") },
-        { "PlayerGui", LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui") },
-        { "Workspace", workspace },
-        { "Lighting", getService("Lighting") },
-        { "SoundService", getService("SoundService") },
-        { "TextChatService", getService("TextChatService") },
-    }
+    table.insert(State.savedPoints, item)
+    createFloorMarker(item.id, pPos, floorPos, item.note)
 
-    for _, entry in ipairs(roots) do
-        scanRoot(entry[2], entry[1], summary)
+    -- Guardar en archivo local
+    if canWrite then
+        pcall(function()
+            local lines = {
+                "==================================================",
+                "REGISTRO DE COORDENADAS Y NIVELES DE PISO",
+                "Fecha/Hora: " .. os.date("!%Y-%m-%d %H:%M:%S UTC"),
+                "=================================================="
+            }
+            for _, pt in ipairs(State.savedPoints) do
+                table.insert(lines, string.format(
+                    "[%02d] %-15s | Posición: (X: %.2f, Y: %.2f, Z: %.2f) | Piso Y: %.2f | Objeto piso: %s | Hora: %s",
+                    pt.id, pt.note, pt.playerPos.X, pt.playerPos.Y, pt.playerPos.Z, pt.floorY, pt.floorPartName, pt.timestamp
+                ))
+            end
+            writefile("coordenadas_guardadas.txt", table.concat(lines, "\n"))
+        end)
     end
-    addLoadedModules(summary)
-    appendInterpretation(summary)
-    flushAuto("final")
 
-    if state.canWrite and state.reportPath then
-        setStatus("Escaneo terminado. Informe: " .. state.reportPath, Color3.fromRGB(111, 207, 151))
-    else
-        setStatus("Escaneo terminado, pero este ejecutor no permitió guardar el TXT.", Color3.fromRGB(255, 180, 100))
-    end
+    return item
 end
 
-local function saveCopy()
-    if #state.allLines == 0 then
-        setStatus("Aún no hay resultados para guardar.", Color3.fromRGB(255, 180, 100))
-        return
-    end
-    if not ensureFolder() then
-        setStatus("writefile/makefolder no está disponible.", Color3.fromRGB(255, 120, 120))
-        return
-    end
-    local copyPath = SETTINGS.outputFolder .. "/auditoria_guardada_" .. nowForFile() .. ".txt"
-    local ok, err = writeRaw(copyPath, table.concat(state.allLines, "\n") .. "\n")
-    if ok then
-        setStatus("Copia guardada: " .. copyPath, Color3.fromRGB(111, 207, 151))
-    else
-        setStatus("No se pudo guardar: " .. oneLine(err), Color3.fromRGB(255, 120, 120))
-    end
-end
+-- ========================================================================
+-- CONSTRUCCIÓN DE LA INTERFAZ GRÁFICA (GUI)
+-- ========================================================================
+local function buildGUI()
+    local parentGui = (gethui and gethui()) or CoreGui or LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not parentGui then return end
 
-local function makeButton(parent, text, position, color)
-    local button = Instance.new("TextButton")
-    button.Size = UDim2.fromOffset(130, 32)
-    button.Position = position
-    button.BackgroundColor3 = color
-    button.BorderSizePixel = 0
-    button.Font = Enum.Font.GothamSemibold
-    button.TextColor3 = Color3.new(1, 1, 1)
-    button.TextSize = 13
-    button.Text = text
-    button.Parent = parent
-    Instance.new("UICorner", button).CornerRadius = UDim.new(0, 7)
-    return button
-end
+    local existing = parentGui:FindFirstChild("DevZonesCoordsUI")
+    if existing then existing:Destroy() end
 
-local function createGui()
-    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-    local existing = playerGui:FindFirstChild("AuditoriaClienteGui")
-    if existing then
-        existing:Destroy()
-    end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "DevZonesCoordsUI"
+    sg.ResetOnSpawn = false
 
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "AuditoriaClienteGui"
-    gui.ResetOnSpawn = false
-    gui.IgnoreGuiInset = true
-    gui.Parent = playerGui
+    -- Marco Principal
+    local main = Instance.new("Frame")
+    main.Name = "MainFrame"
+    main.Size = UDim2.new(0, 360, 0, 480)
+    main.Position = UDim2.new(0.02, 0, 0.15, 0)
+    main.BackgroundColor3 = Color3.fromRGB(18, 20, 26)
+    main.BorderSizePixel = 2
+    main.BorderColor3 = Color3.fromRGB(0, 200, 255)
+    main.Active = true
+    main.Draggable = true
+    main.Parent = sg
 
-    local frame = Instance.new("Frame")
-    frame.Name = "Panel"
-    frame.Size = UDim2.fromOffset(360, 160)
-    frame.Position = UDim2.new(0, 18, 0.5, -80)
-    frame.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-    frame.BorderSizePixel = 0
-    frame.Parent = gui
-    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
+    -- Barra superior
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 32)
+    header.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
+    header.BorderSizePixel = 0
+    header.Parent = main
 
     local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, -24, 0, 28)
-    title.Position = UDim2.fromOffset(12, 8)
+    title.Size = UDim2.new(1, -70, 1, 0)
+    title.Position = UDim2.new(0, 10, 0, 0)
     title.BackgroundTransparency = 1
-    title.Font = Enum.Font.GothamBold
-    title.Text = "Auditoría pasiva del cliente"
-    title.TextColor3 = Color3.fromRGB(235, 240, 255)
-    title.TextSize = 16
+    title.TextColor3 = Color3.fromRGB(0, 230, 255)
+    title.Font = Enum.Font.SourceSansBold
+    title.TextSize = 15
+    title.Text = "🛠️ Inspector: Zonas, Huevos & Coords"
     title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Parent = frame
+    title.Parent = header
 
-    local description = Instance.new("TextLabel")
-    description.Size = UDim2.new(1, -24, 0, 42)
-    description.Position = UDim2.fromOffset(12, 37)
-    description.BackgroundTransparency = 1
-    description.Font = Enum.Font.Gotham
-    description.Text = "Inventario de metadatos visibles. El detalle se escribe automáticamente en un TXT, no en esta ventana."
-    description.TextColor3 = Color3.fromRGB(180, 190, 210)
-    description.TextSize = 12
-    description.TextWrapped = true
-    description.TextXAlignment = Enum.TextXAlignment.Left
-    description.TextYAlignment = Enum.TextYAlignment.Top
-    description.Parent = frame
+    -- Botón Cerrar
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 26, 0, 24)
+    closeBtn.Position = UDim2.new(1, -30, 0, 4)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(200, 40, 40)
+    closeBtn.TextColor3 = Color3.new(1, 1, 1)
+    closeBtn.Font = Enum.Font.SourceSansBold
+    closeBtn.TextSize = 14
+    closeBtn.Text = "X"
+    closeBtn.Parent = header
+    closeBtn.MouseButton1Click:Connect(function()
+        sg:Destroy()
+    end)
 
-    local scanButton = makeButton(frame, "Escanear", UDim2.fromOffset(12, 89), Color3.fromRGB(42, 113, 186))
-    local saveButton = makeButton(frame, "Guardar copia", UDim2.fromOffset(151, 89), Color3.fromRGB(73, 137, 92))
-    local closeButton = makeButton(frame, "Cerrar", UDim2.fromOffset(290, 89), Color3.fromRGB(122, 65, 75))
-    closeButton.Size = UDim2.fromOffset(58, 32)
+    -- Contenedor interno desplazable
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, -12, 1, -40)
+    scroll.Position = UDim2.new(0, 6, 0, 36)
+    scroll.BackgroundTransparency = 1
+    scroll.ScrollBarThickness = 5
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 680)
+    scroll.Parent = main
 
-    local status = Instance.new("TextLabel")
-    status.Size = UDim2.new(1, -24, 0, 25)
-    status.Position = UDim2.fromOffset(12, 128)
-    status.BackgroundTransparency = 1
-    status.Font = Enum.Font.Gotham
-    status.Text = "Listo. El TXT se guarda en Roblox_Auditoria_Cliente/."
-    status.TextColor3 = Color3.fromRGB(180, 190, 210)
-    status.TextSize = 11
-    status.TextTruncate = Enum.TextTruncate.AtEnd
-    status.TextXAlignment = Enum.TextXAlignment.Left
-    status.Parent = frame
-    state.ui.status = status
+    local currentY = 5
 
-    scanButton.MouseButton1Click:Connect(function()
-        if state.running then
-            setStatus("Ya hay un escaneo en curso.", Color3.fromRGB(255, 217, 102))
+    -- 1. SECCIÓN: ÚLTIMA ZONA ROTATIVA
+    local s1Box = Instance.new("Frame")
+    s1Box.Size = UDim2.new(1, 0, 0, 92)
+    s1Box.Position = UDim2.new(0, 0, 0, currentY)
+    s1Box.BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+    s1Box.BorderSizePixel = 1
+    s1Box.BorderColor3 = Color3.fromRGB(255, 180, 0)
+    s1Box.Parent = scroll
+
+    local s1Title = Instance.new("TextLabel")
+    s1Title.Size = UDim2.new(1, -10, 0, 22)
+    s1Title.Position = UDim2.new(0, 5, 0, 2)
+    s1Title.BackgroundTransparency = 1
+    s1Title.TextColor3 = Color3.fromRGB(255, 200, 0)
+    s1Title.Font = Enum.Font.SourceSansBold
+    s1Title.TextSize = 13
+    s1Title.Text = "🔄 ÚLTIMA ZONA ACTIVA (Rotativa)"
+    s1Title.TextXAlignment = Enum.TextXAlignment.Left
+    s1Title.Parent = s1Box
+
+    local s1Text = Instance.new("TextLabel")
+    s1Text.Size = UDim2.new(1, -10, 0, 64)
+    s1Text.Position = UDim2.new(0, 5, 0, 24)
+    s1Text.BackgroundTransparency = 1
+    s1Text.TextColor3 = Color3.fromRGB(230, 230, 230)
+    s1Text.Font = Enum.Font.SourceSans
+    s1Text.TextSize = 13
+    s1Text.TextXAlignment = Enum.TextXAlignment.Left
+    s1Text.TextYAlignment = Enum.TextYAlignment.Top
+    s1Text.Text = "Cargando zona..."
+    s1Text.Parent = s1Box
+
+    currentY = currentY + 98
+
+    -- 2. SECCIÓN: COORDENADAS EN VIVO & PISO
+    local s2Box = Instance.new("Frame")
+    s2Box.Size = UDim2.new(1, 0, 0, 100)
+    s2Box.Position = UDim2.new(0, 0, 0, currentY)
+    s2Box.BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+    s2Box.BorderSizePixel = 1
+    s2Box.BorderColor3 = Color3.fromRGB(0, 200, 255)
+    s2Box.Parent = scroll
+
+    local s2Title = Instance.new("TextLabel")
+    s2Title.Size = UDim2.new(1, -10, 0, 22)
+    s2Title.Position = UDim2.new(0, 5, 0, 2)
+    s2Title.BackgroundTransparency = 1
+    s2Title.TextColor3 = Color3.fromRGB(0, 220, 255)
+    s2Title.Font = Enum.Font.SourceSansBold
+    s2Title.TextSize = 13
+    s2Title.Text = "📍 TU POSICIÓN Y NIVEL DEL SUELO"
+    s2Title.TextXAlignment = Enum.TextXAlignment.Left
+    s2Title.Parent = s2Box
+
+    local s2Text = Instance.new("TextLabel")
+    s2Text.Size = UDim2.new(1, -10, 0, 70)
+    s2Text.Position = UDim2.new(0, 5, 0, 24)
+    s2Text.BackgroundTransparency = 1
+    s2Text.TextColor3 = Color3.fromRGB(220, 255, 240)
+    s2Text.Font = Enum.Font.SourceSans
+    s2Text.TextSize = 13
+    s2Text.TextXAlignment = Enum.TextXAlignment.Left
+    s2Text.TextYAlignment = Enum.TextYAlignment.Top
+    s2Text.Text = "Calculando coordenadas..."
+    s2Text.Parent = s2Box
+
+    currentY = currentY + 106
+
+    -- 3. BOTÓN: GUARDAR COORDENADA ACTUAL
+    local saveBtn = Instance.new("TextButton")
+    saveBtn.Size = UDim2.new(1, 0, 0, 36)
+    saveBtn.Position = UDim2.new(0, 0, 0, currentY)
+    saveBtn.BackgroundColor3 = Color3.fromRGB(0, 160, 110)
+    saveBtn.BorderSizePixel = 0
+    saveBtn.TextColor3 = Color3.new(1, 1, 1)
+    saveBtn.Font = Enum.Font.SourceSansBold
+    saveBtn.TextSize = 14
+    saveBtn.Text = "📌 GUARDAR COORDENADAS Y PISO AQUÍ"
+    saveBtn.Parent = scroll
+
+    currentY = currentY + 42
+
+    -- 4. SECCIÓN: ESTADO DE GODLY EGG Y EVENTOS
+    local s3Box = Instance.new("Frame")
+    s3Box.Size = UDim2.new(1, 0, 0, 80)
+    s3Box.Position = UDim2.new(0, 0, 0, currentY)
+    s3Box.BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+    s3Box.BorderSizePixel = 1
+    s3Box.BorderColor3 = Color3.fromRGB(150, 100, 255)
+    s3Box.Parent = scroll
+
+    local s3Title = Instance.new("TextLabel")
+    s3Title.Size = UDim2.new(1, -10, 0, 22)
+    s3Title.Position = UDim2.new(0, 5, 0, 2)
+    s3Title.BackgroundTransparency = 1
+    s3Title.TextColor3 = Color3.fromRGB(200, 140, 255)
+    s3Title.Font = Enum.Font.SourceSansBold
+    s3Title.TextSize = 13
+    s3Title.Text = "⭐ GODLY EGG & EVENTO HALLOWEEN"
+    s3Title.TextXAlignment = Enum.TextXAlignment.Left
+    s3Title.Parent = s3Box
+
+    local s3Text = Instance.new("TextLabel")
+    s3Text.Size = UDim2.new(1, -10, 0, 52)
+    s3Text.Position = UDim2.new(0, 5, 0, 24)
+    s3Text.BackgroundTransparency = 1
+    s3Text.TextColor3 = Color3.fromRGB(230, 230, 230)
+    s3Text.Font = Enum.Font.SourceSans
+    s3Text.TextSize = 13
+    s3Text.TextXAlignment = Enum.TextXAlignment.Left
+    s3Text.TextYAlignment = Enum.TextYAlignment.Top
+    s3Text.Text = "Escaneando..."
+    s3Text.Parent = s3Box
+
+    currentY = currentY + 86
+
+    -- 5. BOTÓN: RE-ESCANEAR TODO
+    local refreshBtn = Instance.new("TextButton")
+    refreshBtn.Size = UDim2.new(1, 0, 0, 32)
+    refreshBtn.Position = UDim2.new(0, 0, 0, currentY)
+    refreshBtn.BackgroundColor3 = Color3.fromRGB(50, 65, 95)
+    refreshBtn.BorderSizePixel = 0
+    refreshBtn.TextColor3 = Color3.fromRGB(200, 230, 255)
+    refreshBtn.Font = Enum.Font.SourceSansBold
+    refreshBtn.TextSize = 13
+    refreshBtn.Text = "🔄 RE-ESCANEAR ZONAS Y MAPA"
+    refreshBtn.Parent = scroll
+
+    currentY = currentY + 38
+
+    -- 6. HISTORIAL DE PUNTOS GUARDADOS
+    local histLabel = Instance.new("TextLabel")
+    histLabel.Size = UDim2.new(1, 0, 0, 22)
+    histLabel.Position = UDim2.new(0, 0, 0, currentY)
+    histLabel.BackgroundTransparency = 1
+    histLabel.TextColor3 = Color3.fromRGB(180, 200, 220)
+    histLabel.Font = Enum.Font.SourceSansBold
+    histLabel.TextSize = 13
+    histLabel.Text = "📋 Coordenadas Guardadas en esta Sesión:"
+    histLabel.TextXAlignment = Enum.TextXAlignment.Left
+    histLabel.Parent = scroll
+
+    currentY = currentY + 24
+
+    local histBox = Instance.new("TextLabel")
+    histBox.Size = UDim2.new(1, 0, 0, 250)
+    histBox.Position = UDim2.new(0, 0, 0, currentY)
+    histBox.BackgroundColor3 = Color3.fromRGB(14, 16, 20)
+    histBox.BorderSizePixel = 1
+    histBox.BorderColor3 = Color3.fromRGB(40, 45, 55)
+    histBox.TextColor3 = Color3.fromRGB(150, 255, 180)
+    histBox.Font = Enum.Font.Code
+    histBox.TextSize = 11
+    histBox.TextXAlignment = Enum.TextXAlignment.Left
+    histBox.TextYAlignment = Enum.TextYAlignment.Top
+    histBox.Text = "  (Presiona 'GUARDAR' para marcar tu posición)"
+    histBox.Parent = scroll
+
+    -- Actualizar visualización del historial
+    local function updateHistoryView()
+        if #State.savedPoints == 0 then
+            histBox.Text = "  (Aún no has guardado coordenadas)"
             return
         end
-        state.running = true
-        setStatus("Preparando informe…", Color3.fromRGB(255, 217, 102))
-        task.spawn(function()
-            local ok, err = pcall(runScan)
-            if not ok then
-                log("[ERROR_DE_ESCANEO] " .. oneLine(err))
-                flushAuto("error")
-                setStatus("El escaneo se interrumpió; se guardó el avance disponible.", Color3.fromRGB(255, 120, 120))
+        local listTxt = ""
+        for i = #State.savedPoints, 1, -1 do
+            local p = State.savedPoints[i]
+            listTxt = listTxt .. string.format("[%02d] %s\n  Pos: X:%.1f Y:%.1f Z:%.1f\n  Piso Y: %.2f (%s)\n---------------------------\n",
+                p.id, p.note, p.playerPos.X, p.playerPos.Y, p.playerPos.Z, p.floorY, p.floorPartName)
+        end
+        histBox.Text = listTxt
+    end
+
+    -- Evento Botón Guardar
+    saveBtn.MouseButton1Click:Connect(function()
+        local count = #State.savedPoints + 1
+        local customName = "Punto #" .. count .. " (" .. State.activeLastZone.name .. ")"
+        local saved = saveCurrentCoordinates(customName)
+        updateHistoryView()
+
+        saveBtn.Text = "✓ ¡PUNTO #" .. count .. " GUARDADO!"
+        saveBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 140)
+        task.delay(1.5, function()
+            if saveBtn then
+                saveBtn.Text = "📌 GUARDAR COORDENADAS Y PISO AQUÍ"
+                saveBtn.BackgroundColor3 = Color3.fromRGB(0, 160, 110)
             end
-            state.running = false
         end)
     end)
 
-    saveButton.MouseButton1Click:Connect(saveCopy)
-    closeButton.MouseButton1Click:Connect(function()
-        gui:Destroy()
+    -- Evento Botón Refrescar
+    local function performScan()
+        detectRotatingLastZone()
+        scanAllEggs()
+        scanHalloween()
+
+        s1Text.Text = string.format("• Zona Activa: %s\n• Huevo: %s\n• Estado: %s",
+            State.activeLastZone.name, State.activeLastZone.egg, State.activeLastZone.details)
+
+        s3Text.Text = string.format("• GodlyEgg: %s\n• Fuegos Activos: %d\n• Calabazas: %d",
+            State.godlyStatus, State.halloweenStatus.fires, State.halloweenStatus.pumpkins)
+    end
+
+    refreshBtn.MouseButton1Click:Connect(function()
+        performScan()
     end)
 
-    -- Arrastre sencillo del panel; no depende de APIs del ejecutor.
-    local dragging, dragStart, startPosition
-    frame.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            dragStart = input.Position
-            startPosition = frame.Position
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
+    -- Loop ligero para actualizar coordenadas en vivo cada 0.2 segundos
+    local lastUpdate = 0
+    local conn
+    conn = RunService.RenderStepped:Connect(function()
+        if not main or not main.Parent then
+            conn:Disconnect()
+            return
+        end
+
+        local now = tick()
+        if now - lastUpdate >= 0.2 then
+            lastUpdate = now
+            local pos = getPlayerPos()
+            local fPos, fPart = getFloorDetails(pos)
+            local floorY = fPos and fPos.Y or (pos.Y - 3)
+            local partName = fPart and fPart.Name or "No detectado"
+
+            s2Text.Text = string.format(
+                "• Posición: X: %.2f, Y: %.2f, Z: %.2f\n" ..
+                "• Nivel Piso (Y): %.2f\n" ..
+                "• Superficie: %s\n" ..
+                "• Zona actual más cercana: %s",
+                pos.X, pos.Y, pos.Z,
+                floorY,
+                partName,
+                (#State.lastScannedEggs > 0 and State.lastScannedEggs[1].zone or "Buscando...")
+            )
         end
     end)
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local delta = input.Position - dragStart
-            frame.Position = UDim2.new(startPosition.X.Scale, startPosition.X.Offset + delta.X, startPosition.Y.Scale, startPosition.Y.Offset + delta.Y)
-        end
-    end)
+
+    -- Escaneo inicial
+    performScan()
+    sg.Parent = parentGui
+    print("✅ Panel de inspección y marcador de coordenadas iniciado correctamente.")
 end
 
-createGui()
+-- Iniciar GUI
+buildGUI()
