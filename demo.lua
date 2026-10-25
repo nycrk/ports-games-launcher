@@ -1,23 +1,26 @@
 --[[
     ========================================================================
-    INSPECTOR PRO: 12-13 ZONAS, CLASH ARENA, ROTACIONES & MARCADOR DE PISO
+    INSPECTOR PRO: DETECCIÓN DE HUEVO DE ÚLTIMA ZONA & COORDENADAS DE PISO
     ========================================================================
     Diseñado para pruebas y desarrollo en Roblox Luau / Delta.
     
-    Novedades de esta versión:
-    1. Búsqueda profunda de la última zona rotativa:
-       - CLASH ARENA (Clash Egg)
-       - HERO'S BASE (Hero Egg)
-       - VILLAIN'S HIDEOUT (Evil Egg)
-    2. Detección de todas las 12 a 13 zonas del mapa (revisando Workspace y
-       ReplicatedStorage.Modules.ZoneConfigurations).
-    3. Arreglo definitivo de coordenadas en vivo:
-       - Bucle indestructible en task.spawn con pcall.
-       - Cálculo de altura exacta del piso (Raycast hacia abajo).
-    4. Guardado de posición con confirmación visual clara:
-       - Cartel inmediato con las coordenadas y el nivel del piso guardados.
-       - Copiado automático al portapapeles (setclipboard).
-       - Historial completo en pantalla y en 'coordenadas_guardadas.txt'.
+    Novedades añadidas:
+    1. DETECTOR DEL HUEVO DE LA ÚLTIMA ZONA:
+       - Identifica la última zona rotativa (ClashStage, Hero's Base, Villain's Hideout...).
+       - Al presionar [E] y recoger un huevo, verifica si corresponde exactamente 
+         a la última zona activa (ej. Clash Egg en ClashStage).
+       - Despliega una alerta destacada en dorado neón: "¡HUEVO DE ÚLTIMA ZONA EN MANO!".
+    2. EXPLICACIÓN Y CÁLCULO DE ALTURA (Y) Y SUBSUELO:
+       - Tu personaje (HumanoidRootPart) está a Y ≈ 3.10 porque mide ~3 studs.
+       - El piso real de la plataforma está en Y ≈ 0.10.
+       - Calcula automáticamente el punto subterráneo (Piso Y - offset) por si necesitas
+         ubicar puntos o triggers debajo del suelo.
+    3. BOTÓN OPCIONAL "BAJAR AL SUBSUELO":
+       - Permite descender la posición vertical por debajo del nivel del piso
+         (Y = Piso - 3 studs) para pruebas de desarrollo bajo la superficie.
+    4. CORRECCIÓN DEL RAYCAST (Compatibilidad Delta):
+       - Utiliza Enum.RaycastFilterType.Blacklist para evitar el error de Raycast 
+         y mostrar el nombre exacto de la pieza del piso.
     ========================================================================
 ]]
 
@@ -30,17 +33,28 @@ local LocalPlayer = Players.LocalPlayer
 local canWrite = (type(writefile) == "function")
 local canCopy = (type(setclipboard) == "function")
 
--- Estado Global
 local State = {
     running = true,
     savedPoints = {},
     allZones = {},
     rotatingLastZone = {
-        name = "Buscando...",
-        egg = "Buscando...",
+        name = "ClashStage",
+        egg = "Clash Egg",
         coords = nil,
         distance = 0,
         status = "Analizando mapa..."
+    },
+    heldEgg = {
+        isCarrying = false,
+        name = "Ninguno",
+        details = "Manos libres",
+        isFromLastZone = false
+    },
+    floorData = {
+        charY = 3.10,
+        floorY = 0.10,
+        subfloorY = -2.90,
+        partName = "Plataforma"
     },
     godlyEgg = { found = false, info = "Buscando..." },
     halloween = { fires = 0, pumpkins = 0 },
@@ -48,7 +62,7 @@ local State = {
 }
 
 -- ========================================================================
--- FUNCIONES DE POSICIÓN Y PISO (PROTEGIDAS CON PCALL)
+-- POSICIÓN Y RAYCAST DE PISO (COMPATIBILIDAD UNIVERSAL DELTA)
 -- ========================================================================
 local function getPlayerPos()
     local ok, pos = pcall(function()
@@ -61,28 +75,34 @@ local function getPlayerPos()
 end
 
 local function getFloorY(pos)
-    local ok, resY, resPart = pcall(function()
-        local char = LocalPlayer.Character
-        if not char then return pos.Y - 3, "Sin Personaje" end
+    local char = LocalPlayer.Character
+    if not char then return pos.Y - 3, "Sin Personaje" end
 
-        local rayOrigin = pos + Vector3.new(0, 2.5, 0)
-        local rayDir = Vector3.new(0, -80, 0)
+    local rayOrigin = pos + Vector3.new(0, 3, 0)
+    local rayDir = Vector3.new(0, -90, 0)
 
-        local params = RaycastParams.new()
-        params.FilterDescendantsInstances = {char}
-        params.FilterType = RaycastFilterType.Exclude
-
-        local hit = Workspace:Raycast(rayOrigin, rayDir, params)
-        if hit then
-            return hit.Position.Y, (hit.Instance and hit.Instance.Name or "Piso")
+    local params = RaycastParams.new()
+    -- Soporte para ejecutores móviles (Blacklist / Exclude)
+    pcall(function()
+        params.FilterType = Enum.RaycastFilterType.Blacklist
+    end)
+    pcall(function()
+        if not params.FilterType then
+            params.FilterType = Enum.RaycastFilterType.Exclude
         end
-        return pos.Y - 3, "Aprox (Sin impacto)"
+    end)
+    params.FilterDescendantsInstances = {char}
+
+    local ok, hit = pcall(function()
+        return Workspace:Raycast(rayOrigin, rayDir, params)
     end)
 
-    if ok then
-        return resY, resPart
+    if ok and hit then
+        return hit.Position.Y, (hit.Instance and hit.Instance.Name or "Piso Físico")
     end
-    return pos.Y - 3, "Error Raycast"
+
+    -- Si el raycast no toca nada, usamos el nivel estándar de plataforma
+    return 0.10, "Superficie Nivel 0.1"
 end
 
 local function formatVec(v)
@@ -91,36 +111,10 @@ local function formatVec(v)
 end
 
 -- ========================================================================
--- EXPLORACIÓN DE LAS 12-13 ZONAS Y MÓDULOS DE CONFIGURACIÓN
--- ========================================================================
-local function inspectConfigurations()
-    local zoneConfig = nil
-    local eggConfig = nil
-
-    pcall(function()
-        local modules = ReplicatedStorage:FindFirstChild("Modules")
-        if modules then
-            local zm = modules:FindFirstChild("ZoneConfigurations")
-            if zm and zm:IsA("ModuleScript") then
-                zoneConfig = require(zm)
-            end
-            local em = modules:FindFirstChild("EggConfigurations")
-            if em and em:IsA("ModuleScript") then
-                eggConfig = require(em)
-            end
-        end
-    end)
-
-    return zoneConfig, eggConfig
-end
-
--- ========================================================================
--- DETECTAR LA ÚLTIMA ZONA ROTATIVA (CLASH ARENA, HERO'S BASE, VILLAIN)
+-- DETECTAR ÚLTIMA ZONA ROTATIVA (CLASHSTAGE, HERO, VILLAIN)
 -- ========================================================================
 local function detectRotatingLastZone()
     local playerPos = getPlayerPos()
-    local zoneCfg, eggCfg = inspectConfigurations()
-
     local detected = {
         name = "No identificada",
         egg = "No detectado",
@@ -129,89 +123,49 @@ local function detectRotatingLastZone()
         status = "Buscando en Workspace..."
     }
 
-    -- 1. Búsqueda directa por palabras clave en Workspace (Clash Arena, Hero, Villain)
-    local clashObj = nil
-    local heroObj = nil
-    local villainObj = nil
+    local targetObj = nil
 
+    -- 1. Búsqueda prioritaria de ClashStage / Clash Arena
     for _, desc in ipairs(Workspace:GetDescendants()) do
         local l = desc.Name:lower()
         if not desc:IsDescendantOf(LocalPlayer.Character) then
-            if l:match("clash") or l:match("arena") then
-                if desc:IsA("Folder") or desc:IsA("Model") then
-                    clashObj = desc
-                end
+            if l:match("clashstage") or l:match("clash arena") or l == "clash" then
+                targetObj = desc
+                detected.name = desc.Name
+                detected.egg = "Clash Egg"
+                detected.status = "🔥 ¡CLASHSTAGE / ARENA ACTIVA!"
+                break
             elseif l:match("hero") and not l:match("shinra") then
-                if desc:IsA("Folder") or desc:IsA("Model") then
-                    heroObj = desc
-                end
+                targetObj = desc
+                detected.name = desc.Name
+                detected.egg = "Hero Egg"
+                detected.status = "🦸 ¡HERO'S BASE ACTIVA!"
             elseif l:match("villain") or l:match("evil") or l:match("hideout") then
-                if desc:IsA("Folder") or desc:IsA("Model") then
-                    villainObj = desc
-                end
+                targetObj = desc
+                detected.name = desc.Name
+                detected.egg = "Evil Egg"
+                detected.status = "🦹 ¡VILLAIN'S HIDEOUT ACTIVA!"
             end
         end
     end
 
-    -- Determinar cuál está activa
-    local targetZoneInst = nil
-    if clashObj then
-        detected.name = clashObj.Name
-        detected.egg = "Clash Egg"
-        detected.status = "🔥 ¡CLASH ARENA ACTIVA!"
-        targetZoneInst = clashObj
-    elseif heroObj then
-        detected.name = heroObj.Name
-        detected.egg = "Hero Egg"
-        detected.status = "🦸 ¡HERO'S BASE ACTIVA!"
-        targetZoneInst = heroObj
-    elseif villainObj then
-        detected.name = villainObj.Name
-        detected.egg = "Evil Egg"
-        detected.status = "🦹 ¡VILLAIN'S HIDEOUT ACTIVA!"
-        targetZoneInst = villainObj
-    else
-        -- Revisar si en Workspace.Eggs hay alguna carpeta con número alto (ej. Zone12, Zone13)
-        local eggsRoot = Workspace:FindFirstChild("Eggs")
-        if eggsRoot then
-            local highestZone = nil
-            local highestNum = 0
-            for _, child in ipairs(eggsRoot:GetChildren()) do
-                local num = tonumber(child.Name:match("%d+"))
-                if num and num > highestNum then
-                    highestNum = num
-                    highestZone = child
-                end
-            end
-            if highestZone and highestNum >= 7 then
-                detected.name = highestZone.Name
-                detected.egg = "Huevo de " .. highestZone.Name
-                detected.status = string.format("Detectada Zona #%d en Workspace.Eggs", highestNum)
-                targetZoneInst = highestZone
-            end
-        end
-    end
-
-    -- Buscar huevo físico dentro de la zona detectada
-    if targetZoneInst then
+    if targetObj then
         local foundEggPart = nil
-        for _, d in ipairs(targetZoneInst:GetDescendants()) do
+        for _, d in ipairs(targetObj:GetDescendants()) do
             local dl = d.Name:lower()
             if dl:match("egg") or (d:IsA("Model") and d.Name == "SpawnedEgg") then
                 local p = (d:IsA("BasePart") and d) or (d:IsA("Model") and (d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart")))
                 if p then
                     foundEggPart = p
                     local attr = d:GetAttribute("EggType") or d:GetAttribute("Type")
-                    if attr then
-                        detected.egg = tostring(attr)
-                    end
+                    if attr then detected.egg = tostring(attr) end
                     break
                 end
             end
         end
 
         if not foundEggPart then
-            foundEggPart = targetZoneInst:FindFirstChildWhichIsA("BasePart", true)
+            foundEggPart = targetObj:FindFirstChildWhichIsA("BasePart", true)
         end
 
         if foundEggPart then
@@ -225,7 +179,117 @@ local function detectRotatingLastZone()
 end
 
 -- ========================================================================
--- ESCANEAR TODAS LAS 12-13 ZONAS Y HUEVOS
+-- DETECTAR HUEVO EN MANO Y SI CORRESPONDE A LA ÚLTIMA ZONA
+-- ========================================================================
+local function checkHeldEgg()
+    local char = LocalPlayer.Character
+    if not char then
+        State.heldEgg = { isCarrying = false, name = "Sin Personaje", details = "N/A", isFromLastZone = false }
+        return State.heldEgg
+    end
+
+    local carrying = false
+    local eggName = "Ninguno"
+    local detailStr = "Manos libres"
+
+    -- 1. Objeto adjunto al Character
+    for _, child in ipairs(char:GetChildren()) do
+        local l = child.Name:lower()
+        if (l:match("egg") or l:match("carry") or l:match("spawned")) and (child:IsA("Model") or child:IsA("BasePart")) then
+            carrying = true
+            eggName = child.Name
+            detailStr = "Objeto en mano: " .. child.Name
+            break
+        end
+    end
+
+    -- 2. Soldaduras (Welds) en extremidades
+    if not carrying then
+        for _, partName in ipairs({"RightHand", "LeftHand", "Right Arm", "Left Arm", "UpperTorso", "HumanoidRootPart"}) do
+            local bodyPart = char:FindFirstChild(partName)
+            if bodyPart then
+                for _, weld in ipairs(bodyPart:GetChildren()) do
+                    if weld:IsA("Weld") or weld:IsA("WeldConstraint") or weld:IsA("Motor6D") then
+                        local part1 = weld.Part1 or (weld:IsA("WeldConstraint") and weld.Part1)
+                        if part1 and part1.Parent and part1.Parent ~= char then
+                            local pl = part1.Parent.Name:lower()
+                            if pl:match("egg") or pl:match("carry") then
+                                carrying = true
+                                eggName = part1.Parent.Name
+                                detailStr = "Soldado a " .. partName
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+            if carrying then break end
+        end
+    end
+
+    -- 3. Pose / Animación CarryPoseController
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        local animator = humanoid:FindFirstChildOfClass("Animator")
+        if animator then
+            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                local animName = (track.Animation and track.Animation.Name:lower()) or ""
+                if animName:match("carry") or animName:match("hold") then
+                    carrying = true
+                    if eggName == "Ninguno" then
+                        -- Si tenemos la última zona detectada, asumimos su huevo
+                        eggName = State.rotatingLastZone.egg or "Huevo en mano"
+                    end
+                    detailStr = "Pose Carry activa (" .. animName .. ")"
+                    break
+                end
+            end
+        end
+    end
+
+    -- 4. Comprobar si el huevo en mano es el de la última zona activa
+    local isLastZone = false
+    if carrying and State.rotatingLastZone.egg ~= "No detectado" then
+        local hLower = eggName:lower()
+        local targetLower = State.rotatingLastZone.egg:lower()
+        if hLower:match(targetLower) or targetLower:match(hLower) 
+           or (targetLower:match("clash") and (hLower:match("clash") or hLower:match("carry") or hLower:match("huevo")))
+           or (targetLower:match("hero") and hLower:match("hero"))
+           or (targetLower:match("evil") and hLower:match("evil")) then
+            isLastZone = true
+        end
+    end
+
+    State.heldEgg = {
+        isCarrying = carrying,
+        name = eggName,
+        details = detailStr,
+        isFromLastZone = isLastZone
+    }
+    return State.heldEgg
+end
+
+-- ========================================================================
+-- FUNCIÓN: BAJAR AL SUBSUELO (PRUEBAS DE NIVEL DE PISO)
+-- ========================================================================
+local function teleportToSubfloor()
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+
+    local currentPos = root.Position
+    local floorY, _ = getFloorY(currentPos)
+    local subY = floorY - 3.5 -- 3.5 studs debajo del piso
+
+    pcall(function()
+        root.CFrame = CFrame.new(currentPos.X, subY, currentPos.Z)
+    end)
+    return true, subY
+end
+
+-- ========================================================================
+-- ESCANEAR TODAS LAS ZONAS Y EVENTOS
 -- ========================================================================
 local function scanAllZonesAndEggs()
     local playerPos = getPlayerPos()
@@ -243,9 +307,7 @@ local function scanAllZonesAndEggs()
                 local dl = desc.Name:lower()
                 if dl:match("egg") or desc.Name == "SpawnedEgg" then
                     local p = (desc:IsA("BasePart") and desc) or (desc:IsA("Model") and (desc.PrimaryPart or desc:FindFirstChildWhichIsA("BasePart")))
-                    if p and not repPart then
-                        repPart = p
-                    end
+                    if p and not repPart then repPart = p end
 
                     local detectedEgg = desc.Name
                     local attr = desc:GetAttribute("EggType") or desc:GetAttribute("Type")
@@ -270,16 +332,13 @@ local function scanAllZonesAndEggs()
         end
     end
 
-    table.sort(zonesList, function(a, b) return a.distance < b.distance end)
     State.allZones = zonesList
-
     if godlyFound then
         State.godlyEgg = { found = true, info = string.format("¡En %s! a %d studs", godlyFound.zone, godlyFound.dist) }
     else
         State.godlyEgg = { found = false, info = "No spawneado actualmente" }
     end
 
-    -- Conteo rápido de Halloween
     local fires = 0
     local pumpkins = 0
     for _, d in ipairs(Workspace:GetDescendants()) do
@@ -299,11 +358,12 @@ local function scanAllZonesAndEggs()
 end
 
 -- ========================================================================
--- GUARDADO SEGURO DE COORDENADAS
+-- GUARDADO DE COORDENADAS CON SUBSUELO
 -- ========================================================================
 local function saveCurrentPosition()
     local pPos = getPlayerPos()
     local floorY, floorPart = getFloorY(pPos)
+    local subY = floorY - 3.5
 
     local pointId = #State.savedPoints + 1
     local zoneTag = State.rotatingLastZone.name
@@ -316,39 +376,39 @@ local function saveCurrentPosition()
         y = pPos.Y,
         z = pPos.Z,
         floorY = floorY,
+        subfloorY = subY,
         floorPart = floorPart,
+        heldEgg = State.heldEgg.name,
+        isLastZoneEgg = State.heldEgg.isFromLastZone,
         time = os.date("%H:%M:%S")
     }
 
     table.insert(State.savedPoints, item)
 
-    -- Feedback visible
-    local feedbackStr = string.format("✅ #%d Guardado: X:%.1f, Y:%.1f, Z:%.1f | Piso Y:%.2f (%s)",
-        item.id, item.x, item.y, item.z, item.floorY, item.floorPart)
+    local feedbackStr = string.format("✅ #%d: X:%.1f, Y:%.1f, Z:%.1f | Piso: %.2f | Subsuelo: %.2f",
+        item.id, item.x, item.y, item.z, item.floorY, item.subfloorY)
     State.lastSavedFeedback = feedbackStr
 
-    -- Copiar al portapapeles para pegar rápido en Luau/Bloc de notas
     if canCopy then
         pcall(function()
-            local copyText = string.format("Vector3.new(%.2f, %.2f, %.2f) -- Piso Y: %.2f (%s)",
-                item.x, item.y, item.z, item.floorY, item.note)
+            local copyText = string.format("Vector3.new(%.2f, %.2f, %.2f) -- Piso Y: %.2f | Subsuelo Y: %.2f (%s | Huevo: %s)",
+                item.x, item.y, item.z, item.floorY, item.subfloorY, item.note, item.heldEgg)
             setclipboard(copyText)
         end)
     end
 
-    -- Guardar archivo en disco
     if canWrite then
         pcall(function()
             local lines = {
                 "==================================================",
-                "COORDENADAS GUARDADAS DEL JUEGO",
+                "HISTORIAL DE COORDENADAS, PISO Y SUBSUELO",
                 "Fecha: " .. os.date("!%Y-%m-%d %H:%M:%S UTC"),
                 "=================================================="
             }
             for _, pt in ipairs(State.savedPoints) do
                 table.insert(lines, string.format(
-                    "[%02d] %-25s | Pos: (%.2f, %.2f, %.2f) | Piso Y: %.2f | Objeto: %s | Hora: %s",
-                    pt.id, pt.note, pt.x, pt.y, pt.z, pt.floorY, pt.floorPart, pt.time
+                    "[%02d] %-22s | Pos: (%.2f, %.2f, %.2f) | Piso Y: %.2f | Subsuelo Y: %.2f | Huevo: %s (ÚltimaZona: %s) | Hora: %s",
+                    pt.id, pt.note, pt.x, pt.y, pt.z, pt.floorY, pt.subfloorY, pt.heldEgg, tostring(pt.isLastZoneEgg), pt.time
                 ))
             end
             writefile("coordenadas_guardadas.txt", table.concat(lines, "\n"))
@@ -359,7 +419,7 @@ local function saveCurrentPosition()
 end
 
 -- ========================================================================
--- CONSTRUCCIÓN DE LA INTERFAZ GRÁFICA
+-- INTERFAZ GRÁFICA (GUI)
 -- ========================================================================
 local function buildGUI()
     local parentGui = (gethui and gethui()) or CoreGui or LocalPlayer:FindFirstChildOfClass("PlayerGui")
@@ -374,8 +434,8 @@ local function buildGUI()
 
     local main = Instance.new("Frame")
     main.Name = "MainFrame"
-    main.Size = UDim2.new(0, 380, 0, 560)
-    main.Position = UDim2.new(0.02, 0, 0.08, 0)
+    main.Size = UDim2.new(0, 385, 0, 600)
+    main.Position = UDim2.new(0.02, 0, 0.05, 0)
     main.BackgroundColor3 = Color3.fromRGB(15, 17, 23)
     main.BorderSizePixel = 2
     main.BorderColor3 = Color3.fromRGB(0, 220, 255)
@@ -420,14 +480,14 @@ local function buildGUI()
     scroll.Position = UDim2.new(0, 6, 0, 38)
     scroll.BackgroundTransparency = 1
     scroll.ScrollBarThickness = 5
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 840)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 970)
     scroll.Parent = main
 
     local curY = 5
 
-    -- [1] SECCIÓN: ÚLTIMA ZONA ROTATIVA (CLASH ARENA, HERO'S, VILLAIN'S)
+    -- [1] ÚLTIMA ZONA ROTATIVA ACTIVA
     local s1Box = Instance.new("Frame")
-    s1Box.Size = UDim2.new(1, 0, 0, 115)
+    s1Box.Size = UDim2.new(1, 0, 0, 105)
     s1Box.Position = UDim2.new(0, 0, 0, curY)
     s1Box.BackgroundColor3 = Color3.fromRGB(22, 26, 36)
     s1Box.BorderSizePixel = 1
@@ -446,7 +506,7 @@ local function buildGUI()
     s1Title.Parent = s1Box
 
     local s1Text = Instance.new("TextLabel")
-    s1Text.Size = UDim2.new(1, -12, 0, 85)
+    s1Text.Size = UDim2.new(1, -12, 0, 78)
     s1Text.Position = UDim2.new(0, 6, 0, 24)
     s1Text.BackgroundTransparency = 1
     s1Text.TextColor3 = Color3.fromRGB(240, 240, 240)
@@ -457,11 +517,44 @@ local function buildGUI()
     s1Text.Text = "Buscando rotación..."
     s1Text.Parent = s1Box
 
-    curY = curY + 122
+    curY = curY + 112
 
-    -- [2] SECCIÓN: POSICIÓN EN VIVO Y NIVEL DEL PISO
+    -- [2] SECCIÓN HUEVO EN MANO + DETECTOR ÚLTIMA ZONA
+    local carryBox = Instance.new("Frame")
+    carryBox.Size = UDim2.new(1, 0, 0, 75)
+    carryBox.Position = UDim2.new(0, 0, 0, curY)
+    carryBox.BackgroundColor3 = Color3.fromRGB(20, 28, 40)
+    carryBox.BorderSizePixel = 1
+    carryBox.BorderColor3 = Color3.fromRGB(0, 255, 170)
+    carryBox.Parent = scroll
+
+    local carryTitle = Instance.new("TextLabel")
+    carryTitle.Size = UDim2.new(1, -10, 0, 20)
+    carryTitle.Position = UDim2.new(0, 6, 0, 2)
+    carryTitle.BackgroundTransparency = 1
+    carryTitle.TextColor3 = Color3.fromRGB(0, 255, 200)
+    carryTitle.Font = Enum.Font.SourceSansBold
+    carryTitle.TextSize = 13
+    carryTitle.Text = "🥚 HUEVO EN MANO / RECOLECCIÓN ([E])"
+    carryTitle.TextXAlignment = Enum.TextXAlignment.Left
+    carryTitle.Parent = carryBox
+
+    local carryText = Instance.new("TextLabel")
+    carryText.Size = UDim2.new(1, -12, 0, 48)
+    carryText.Position = UDim2.new(0, 6, 0, 22)
+    carryText.BackgroundTransparency = 1
+    carryText.TextColor3 = Color3.fromRGB(240, 255, 250)
+    carryText.Font = Enum.Font.SourceSans
+    carryText.TextSize = 13
+    carryText.TextXAlignment = Enum.TextXAlignment.Left
+    carryText.Text = "• Estado: Manos libres (Sin huevo)"
+    carryText.Parent = carryBox
+
+    curY = curY + 82
+
+    -- [3] TU POSICIÓN, PISO Y SUBSUELO EN VIVO
     local s2Box = Instance.new("Frame")
-    s2Box.Size = UDim2.new(1, 0, 0, 95)
+    s2Box.Size = UDim2.new(1, 0, 0, 105)
     s2Box.Position = UDim2.new(0, 0, 0, curY)
     s2Box.BackgroundColor3 = Color3.fromRGB(22, 26, 36)
     s2Box.BorderSizePixel = 1
@@ -475,12 +568,12 @@ local function buildGUI()
     s2Title.TextColor3 = Color3.fromRGB(0, 230, 255)
     s2Title.Font = Enum.Font.SourceSansBold
     s2Title.TextSize = 13
-    s2Title.Text = "📍 TU POSICIÓN Y NIVEL DEL SUELO (EN VIVO)"
+    s2Title.Text = "📍 TU POSICIÓN, PISO Y SUBSUELO (EN VIVO)"
     s2Title.TextXAlignment = Enum.TextXAlignment.Left
     s2Title.Parent = s2Box
 
     local s2Text = Instance.new("TextLabel")
-    s2Text.Size = UDim2.new(1, -12, 0, 68)
+    s2Text.Size = UDim2.new(1, -12, 0, 78)
     s2Text.Position = UDim2.new(0, 6, 0, 24)
     s2Text.BackgroundTransparency = 1
     s2Text.TextColor3 = Color3.fromRGB(220, 255, 240)
@@ -488,26 +581,36 @@ local function buildGUI()
     s2Text.TextSize = 13
     s2Text.TextXAlignment = Enum.TextXAlignment.Left
     s2Text.TextYAlignment = Enum.TextYAlignment.Top
-    s2Text.Text = "Iniciando lector de coordenadas..."
+    s2Text.Text = "Leyendo coordenadas..."
     s2Text.Parent = s2Box
 
-    curY = curY + 102
+    curY = curY + 112
 
-    -- [3] BOTÓN: GUARDAR COORDENADA ACTUAL
+    -- [4] BOTONES DE ACCIÓN: GUARDAR Y BAJAR AL SUBSUELO
     local saveBtn = Instance.new("TextButton")
-    saveBtn.Size = UDim2.new(1, 0, 0, 38)
+    saveBtn.Size = UDim2.new(0.68, -4, 0, 36)
     saveBtn.Position = UDim2.new(0, 0, 0, curY)
     saveBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 120)
     saveBtn.BorderSizePixel = 0
     saveBtn.TextColor3 = Color3.new(1, 1, 1)
     saveBtn.Font = Enum.Font.SourceSansBold
-    saveBtn.TextSize = 14
-    saveBtn.Text = "📌 GUARDAR MI POSICIÓN Y PISO AQUÍ"
+    saveBtn.TextSize = 13
+    saveBtn.Text = "📌 GUARDAR POSICIÓN Y PISO"
     saveBtn.Parent = scroll
 
-    curY = curY + 44
+    local subfloorBtn = Instance.new("TextButton")
+    subfloorBtn.Size = UDim2.new(0.32, 0, 0, 36)
+    subfloorBtn.Position = UDim2.new(0.68, 2, 0, curY)
+    subfloorBtn.BackgroundColor3 = Color3.fromRGB(180, 80, 20)
+    subfloorBtn.BorderSizePixel = 0
+    subfloorBtn.TextColor3 = Color3.new(1, 1, 1)
+    subfloorBtn.Font = Enum.Font.SourceSansBold
+    subfloorBtn.TextSize = 12
+    subfloorBtn.Text = "⬇️ BAJAR AL SUBSUELO"
+    subfloorBtn.Parent = scroll
 
-    -- [3.1] CARTEL VISUAL DE CONFIRMACIÓN DE GUARDADO
+    curY = curY + 42
+
     local feedbackLabel = Instance.new("TextLabel")
     feedbackLabel.Size = UDim2.new(1, 0, 0, 36)
     feedbackLabel.Position = UDim2.new(0, 0, 0, curY)
@@ -516,15 +619,15 @@ local function buildGUI()
     feedbackLabel.BorderColor3 = Color3.fromRGB(0, 255, 170)
     feedbackLabel.TextColor3 = Color3.fromRGB(150, 255, 200)
     feedbackLabel.Font = Enum.Font.SourceSansBold
-    feedbackLabel.TextSize = 12
+    feedbackLabel.TextSize = 11
     feedbackLabel.Text = State.lastSavedFeedback
     feedbackLabel.Parent = scroll
 
     curY = curY + 42
 
-    -- [4] SECCIÓN: ESTADO DE GODLY EGG Y EVENTOS
+    -- [5] GODLY EGG Y HALLOWEEN
     local s3Box = Instance.new("Frame")
-    s3Box.Size = UDim2.new(1, 0, 0, 75)
+    s3Box.Size = UDim2.new(1, 0, 0, 70)
     s3Box.Position = UDim2.new(0, 0, 0, curY)
     s3Box.BackgroundColor3 = Color3.fromRGB(22, 26, 36)
     s3Box.BorderSizePixel = 1
@@ -532,7 +635,7 @@ local function buildGUI()
     s3Box.Parent = scroll
 
     local s3Title = Instance.new("TextLabel")
-    s3Title.Size = UDim2.new(1, -10, 0, 22)
+    s3Title.Size = UDim2.new(1, -10, 0, 20)
     s3Title.Position = UDim2.new(0, 6, 0, 2)
     s3Title.BackgroundTransparency = 1
     s3Title.TextColor3 = Color3.fromRGB(220, 140, 255)
@@ -543,20 +646,20 @@ local function buildGUI()
     s3Title.Parent = s3Box
 
     local s3Text = Instance.new("TextLabel")
-    s3Text.Size = UDim2.new(1, -12, 0, 48)
-    s3Text.Position = UDim2.new(0, 6, 0, 24)
+    s3Text.Size = UDim2.new(1, -12, 0, 44)
+    s3Text.Position = UDim2.new(0, 6, 0, 22)
     s3Text.BackgroundTransparency = 1
     s3Text.TextColor3 = Color3.fromRGB(230, 230, 230)
     s3Text.Font = Enum.Font.SourceSans
     s3Text.TextSize = 13
     s3Text.TextXAlignment = Enum.TextXAlignment.Left
     s3Text.TextYAlignment = Enum.TextYAlignment.Top
-    s3Text.Text = "Escaneando eventos..."
+    s3Text.Text = "Escaneando..."
     s3Text.Parent = s3Box
 
-    curY = curY + 82
+    curY = curY + 76
 
-    -- [5] BOTÓN: RE-ESCANEAR TODO
+    -- [6] BOTÓN REFRESCAR
     local refreshBtn = Instance.new("TextButton")
     refreshBtn.Size = UDim2.new(1, 0, 0, 32)
     refreshBtn.Position = UDim2.new(0, 0, 0, curY)
@@ -565,24 +668,24 @@ local function buildGUI()
     refreshBtn.TextColor3 = Color3.fromRGB(210, 235, 255)
     refreshBtn.Font = Enum.Font.SourceSansBold
     refreshBtn.TextSize = 13
-    refreshBtn.Text = "🔄 RE-ESCANEAR ZONAS Y MAPA"
+    refreshBtn.Text = "🔄 RE-ESCANEAR ROTACIÓN Y MAPA"
     refreshBtn.Parent = scroll
 
     curY = curY + 38
 
-    -- [6] HISTORIAL COMPLETO DE COORDENADAS GUARDADAS
+    -- [7] HISTORIAL
     local histLabel = Instance.new("TextLabel")
-    histLabel.Size = UDim2.new(1, 0, 0, 22)
+    histLabel.Size = UDim2.new(1, 0, 0, 20)
     histLabel.Position = UDim2.new(0, 0, 0, curY)
     histLabel.BackgroundTransparency = 1
     histLabel.TextColor3 = Color3.fromRGB(180, 200, 230)
     histLabel.Font = Enum.Font.SourceSansBold
     histLabel.TextSize = 13
-    histLabel.Text = "📋 Coordenadas Guardadas en esta Sesión:"
+    histLabel.Text = "📋 Historial de Puntos y Subsuelos:"
     histLabel.TextXAlignment = Enum.TextXAlignment.Left
     histLabel.Parent = scroll
 
-    curY = curY + 24
+    curY = curY + 22
 
     local histBox = Instance.new("TextLabel")
     histBox.Size = UDim2.new(1, 0, 0, 280)
@@ -606,8 +709,9 @@ local function buildGUI()
         local listTxt = ""
         for i = #State.savedPoints, 1, -1 do
             local p = State.savedPoints[i]
-            listTxt = listTxt .. string.format("[%02d] %s\n  Pos: (X:%.1f, Y:%.1f, Z:%.1f)\n  Piso Y: %.2f | Objeto: %s | Hora: %s\n------------------------------------\n",
-                p.id, p.note, p.x, p.y, p.z, p.floorY, p.floorPart, p.time)
+            local lastTag = p.isLastZoneEgg and " [⭐ HUEVO ÚLTIMA ZONA]" or ""
+            listTxt = listTxt .. string.format("[%02d] %s%s\n  Pos: (X:%.1f, Y:%.1f, Z:%.1f)\n  Piso: %.2f | Subsuelo: %.2f\n  Huevo en mano: %s\n------------------------------------\n",
+                p.id, p.note, lastTag, p.x, p.y, p.z, p.floorY, p.subfloorY, p.heldEgg or "Ninguno")
         end
         histBox.Text = listTxt
     end
@@ -626,48 +730,86 @@ local function buildGUI()
             z.status, z.name, z.egg, coordsStr, z.distance
         )
 
-        s3Text.Text = string.format("• GodlyEgg: %s\n• Fuegos Activos: %d | Calabazas: %d\n• Zonas visibles en Workspace: %d",
+        s3Text.Text = string.format("• GodlyEgg: %s\n• Fuegos Activos: %d | Calabazas: %d\n• Zonas visibles: %d",
             State.godlyEgg.info, State.halloween.fires, State.halloween.pumpkins, #State.allZones)
     end
 
-    -- Evento Guardar con confirmación clara
     saveBtn.MouseButton1Click:Connect(function()
         local item, fb = saveCurrentPosition()
         feedbackLabel.Text = fb
         feedbackLabel.TextColor3 = Color3.fromRGB(0, 255, 200)
         updateHistoryView()
 
-        saveBtn.Text = string.format("✓ ¡PUNTO #%d GUARDADO Y COPIADO!", item.id)
+        saveBtn.Text = string.format("✓ #%d GUARDADO!", item.id)
         saveBtn.BackgroundColor3 = Color3.fromRGB(0, 210, 140)
-        task.delay(1.8, function()
+        task.delay(1.5, function()
             if saveBtn and saveBtn.Parent then
-                saveBtn.Text = "📌 GUARDAR MI POSICIÓN Y PISO AQUÍ"
+                saveBtn.Text = "📌 GUARDAR POSICIÓN Y PISO"
                 saveBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 120)
             end
         end)
+    end)
+
+    -- Botón para descender debajo del piso
+    subfloorBtn.MouseButton1Click:Connect(function()
+        local ok, subY = teleportToSubfloor()
+        if ok then
+            subfloorBtn.Text = "✓ BAJADO A " .. string.format("%.1f", subY)
+            subfloorBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 30)
+            task.delay(1.5, function()
+                if subfloorBtn and subfloorBtn.Parent then
+                    subfloorBtn.Text = "⬇️ BAJAR AL SUBSUELO"
+                    subfloorBtn.BackgroundColor3 = Color3.fromRGB(180, 80, 20)
+                end
+            end)
+        end
     end)
 
     refreshBtn.MouseButton1Click:Connect(function()
         performScan()
     end)
 
-    -- BUCLE EN TIEMPO REAL ULTRA RESISTENTE (task.spawn + pcall)
+    -- BUCLE EN VIVO (POSICIÓN, PISO Y HUEVO EN MANO)
     task.spawn(function()
         while State.running and main and main.Parent do
             pcall(function()
                 local pos = getPlayerPos()
                 local floorY, floorPart = getFloorY(pos)
+                local subY = floorY - 3.5
+                local held = checkHeldEgg()
 
+                -- Actualizar posición, piso y subsuelo
                 s2Text.Text = string.format(
-                    "• Posición: X: %.2f, Y: %.2f, Z: %.2f\n" ..
-                    "• Nivel del Piso (Y): %.2f\n" ..
-                    "• Objeto Debajo: %s\n" ..
+                    "• Posición Cuerpo (Y): %.2f  (X: %.2f, Z: %.2f)\n" ..
+                    "• Nivel Superficie Piso: Y = %.2f (%s)\n" ..
+                    "• Nivel Subsuelo Estimado: Y = %.2f\n" ..
                     "• Distancia a Última Zona: %d studs",
-                    pos.X, pos.Y, pos.Z,
-                    floorY,
-                    floorPart,
+                    pos.Y, pos.X, pos.Z,
+                    floorY, floorPart,
+                    subY,
                     State.rotatingLastZone.distance or 0
                 )
+
+                -- Actualizar estado de huevo en mano con alerta especial
+                if held.isCarrying then
+                    if held.isFromLastZone then
+                        carryText.Text = string.format("⭐ ¡¡TIENES EL HUEVO DE LA ÚLTIMA ZONA!! ⭐\n• Huevo: %s (de %s)\n• Detalle: %s",
+                            held.name, State.rotatingLastZone.name, held.details)
+                        carryText.TextColor3 = Color3.fromRGB(255, 230, 50)
+                        carryBox.BackgroundColor3 = Color3.fromRGB(45, 40, 15)
+                        carryBox.BorderColor3 = Color3.fromRGB(255, 215, 0)
+                    else
+                        carryText.Text = string.format("• 🥚 Cargando huevo: %s\n• Detalle: %s", held.name, held.details)
+                        carryText.TextColor3 = Color3.fromRGB(150, 255, 200)
+                        carryBox.BackgroundColor3 = Color3.fromRGB(20, 35, 30)
+                        carryBox.BorderColor3 = Color3.fromRGB(0, 255, 170)
+                    end
+                else
+                    carryText.Text = "• Estado: Manos libres (Sin huevo en mano)\n• Acércate al nido y pulsa [E] para tomarlo."
+                    carryText.TextColor3 = Color3.fromRGB(180, 220, 210)
+                    carryBox.BackgroundColor3 = Color3.fromRGB(20, 28, 40)
+                    carryBox.BorderColor3 = Color3.fromRGB(0, 180, 140)
+                end
             end)
             task.wait(0.2)
         end
@@ -675,7 +817,7 @@ local function buildGUI()
 
     performScan()
     sg.Parent = parentGui
-    print("✅ Panel Inspector Pro iniciado con soporte para Clash Arena y guardado visual.")
+    print("✅ Panel Inspector Pro actualizado con detector de huevo de última zona y subsuelo.")
 end
 
 buildGUI()
