@@ -1,26 +1,28 @@
 --[[
     ========================================================================
-    INSPECTOR PRO: DETECCIÓN DE HUEVO DE ÚLTIMA ZONA & COORDENADAS DE PISO
+    INSPECTOR PRO: ZONAS, HUEVOS & PLATAFORMA SEGURA DE SUBSUELO (ANTI-CAÍDA)
     ========================================================================
     Diseñado para pruebas y desarrollo en Roblox Luau / Delta.
     
-    Novedades añadidas:
-    1. DETECTOR DEL HUEVO DE LA ÚLTIMA ZONA:
-       - Identifica la última zona rotativa (ClashStage, Hero's Base, Villain's Hideout...).
-       - Al presionar [E] y recoger un huevo, verifica si corresponde exactamente 
-         a la última zona activa (ej. Clash Egg en ClashStage).
-       - Despliega una alerta destacada en dorado neón: "¡HUEVO DE ÚLTIMA ZONA EN MANO!".
-    2. EXPLICACIÓN Y CÁLCULO DE ALTURA (Y) Y SUBSUELO:
-       - Tu personaje (HumanoidRootPart) está a Y ≈ 3.10 porque mide ~3 studs.
-       - El piso real de la plataforma está en Y ≈ 0.10.
-       - Calcula automáticamente el punto subterráneo (Piso Y - offset) por si necesitas
-         ubicar puntos o triggers debajo del suelo.
-    3. BOTÓN OPCIONAL "BAJAR AL SUBSUELO":
-       - Permite descender la posición vertical por debajo del nivel del piso
-         (Y = Piso - 3 studs) para pruebas de desarrollo bajo la superficie.
-    4. CORRECCIÓN DEL RAYCAST (Compatibilidad Delta):
-       - Utiliza Enum.RaycastFilterType.Blacklist para evitar el error de Raycast 
-         y mostrar el nombre exacto de la pieza del piso.
+    ¿Por qué caías al vacío?
+    El suelo del mapa (Baseplate) termina en Y = 0.00. Debajo de eso no hay
+    piezas sólidas en el juego, por lo que la gravedad hace caer a tu personaje
+    hasta el límite del vacío (FallenPartsDestroyHeight) y Roblox te elimina.
+    
+    Solución implementada en esta versión:
+    1. PLATAFORMA DE SOPORTE LOCAL AUTOMÁTICA:
+       - Al presionar '⬇️ BAJAR AL SUBSUELO', el script genera una plataforma física 
+         neón debajo de ti (Anchored = true, CanCollide = true).
+       - Te sitúa sobre ella para que puedas quedarte parado a Y ≈ -3.5 studs 
+         sin caerte al vacío ni morir.
+    2. BOTÓN DE REGRESO SEGURO:
+       - '⬆️ SUBIR A LA SUPERFICIE' te regresa de vuelta al suelo normal (Y ≈ 3.5)
+         y limpia la plataforma de prueba.
+    3. DETECCIÓN DINÁMICA DE ZONA ROTATIVA:
+       - Confirmado funcionando en tus capturas:
+         * ClashStage  -> Clash Egg
+         * EvilStage   -> Evil Egg
+         * HeroStage   -> Hero Egg
     ========================================================================
 ]]
 
@@ -35,14 +37,16 @@ local canCopy = (type(setclipboard) == "function")
 
 local State = {
     running = true,
+    isUnderground = false,
+    subPlatform = nil,
     savedPoints = {},
     allZones = {},
     rotatingLastZone = {
-        name = "ClashStage",
-        egg = "Clash Egg",
+        name = "EvilStage",
+        egg = "Evil Egg",
         coords = nil,
         distance = 0,
-        status = "Analizando mapa..."
+        status = "Detectando..."
     },
     heldEgg = {
         isCarrying = false,
@@ -50,19 +54,13 @@ local State = {
         details = "Manos libres",
         isFromLastZone = false
     },
-    floorData = {
-        charY = 3.10,
-        floorY = 0.10,
-        subfloorY = -2.90,
-        partName = "Plataforma"
-    },
     godlyEgg = { found = false, info = "Buscando..." },
     halloween = { fires = 0, pumpkins = 0 },
     lastSavedFeedback = "Ninguna posición guardada aún."
 }
 
 -- ========================================================================
--- POSICIÓN Y RAYCAST DE PISO (COMPATIBILIDAD UNIVERSAL DELTA)
+-- FUNCIONES DE POSICIÓN Y PISO (COMPATIBILIDAD UNIVERSAL)
 -- ========================================================================
 local function getPlayerPos()
     local ok, pos = pcall(function()
@@ -82,16 +80,12 @@ local function getFloorY(pos)
     local rayDir = Vector3.new(0, -90, 0)
 
     local params = RaycastParams.new()
-    -- Soporte para ejecutores móviles (Blacklist / Exclude)
-    pcall(function()
-        params.FilterType = Enum.RaycastFilterType.Blacklist
-    end)
-    pcall(function()
-        if not params.FilterType then
-            params.FilterType = Enum.RaycastFilterType.Exclude
-        end
-    end)
-    params.FilterDescendantsInstances = {char}
+    pcall(function() params.FilterType = Enum.RaycastFilterType.Blacklist end)
+    pcall(function() if not params.FilterType then params.FilterType = Enum.RaycastFilterType.Exclude end end)
+    
+    local filterList = {char}
+    if State.subPlatform then table.insert(filterList, State.subPlatform) end
+    params.FilterDescendantsInstances = filterList
 
     local ok, hit = pcall(function()
         return Workspace:Raycast(rayOrigin, rayDir, params)
@@ -101,8 +95,7 @@ local function getFloorY(pos)
         return hit.Position.Y, (hit.Instance and hit.Instance.Name or "Piso Físico")
     end
 
-    -- Si el raycast no toca nada, usamos el nivel estándar de plataforma
-    return 0.10, "Superficie Nivel 0.1"
+    return 0.00, "Baseplate (Nivel 0.0)"
 end
 
 local function formatVec(v)
@@ -111,7 +104,65 @@ local function formatVec(v)
 end
 
 -- ========================================================================
--- DETECTAR ÚLTIMA ZONA ROTATIVA (CLASHSTAGE, HERO, VILLAIN)
+-- PLATAFORMA SEGURA DE SUBSUELO (ANTI-CAÍDA / ANTI-VACÍO)
+-- ========================================================================
+local function enterSubfloorSafe()
+    local char = LocalPlayer.Character
+    if not char then return false, "Sin Personaje" end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return false, "Sin RootPart" end
+
+    local curPos = root.Position
+    local floorY, _ = getFloorY(curPos)
+    local targetY = -3.50 -- Nivel debajo del Baseplate
+
+    -- Limpiar plataforma previa si existiera
+    if State.subPlatform and State.subPlatform.Parent then
+        State.subPlatform:Destroy()
+        State.subPlatform = nil
+    end
+
+    -- Crear plataforma sólida local de 12x1x12 studs para pararte encima
+    local plat = Instance.new("Part")
+    plat.Name = "Dev_Plataforma_Soporte_Subsuelo"
+    plat.Size = Vector3.new(12, 1, 12)
+    plat.Position = Vector3.new(curPos.X, targetY - 2.5, curPos.Z)
+    plat.Anchored = true
+    plat.CanCollide = true
+    plat.Material = Enum.Material.Neon
+    plat.Color = Color3.fromRGB(0, 220, 255)
+    plat.Transparency = 0.35
+    plat.Parent = Workspace
+
+    State.subPlatform = plat
+    State.isUnderground = true
+
+    -- Mover al jugador de forma segura encima de la plataforma
+    root.CFrame = CFrame.new(curPos.X, targetY, curPos.Z)
+    return true, targetY
+end
+
+local function exitSubfloorSafe()
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+
+    local curPos = root.Position
+    local targetY = 3.50 -- Regresar sobre el Baseplate
+
+    if State.subPlatform and State.subPlatform.Parent then
+        State.subPlatform:Destroy()
+        State.subPlatform = nil
+    end
+
+    State.isUnderground = false
+    root.CFrame = CFrame.new(curPos.X, targetY, curPos.Z)
+    return true, targetY
+end
+
+-- ========================================================================
+-- DETECTAR ÚLTIMA ZONA ROTATIVA
 -- ========================================================================
 local function detectRotatingLastZone()
     local playerPos = getPlayerPos()
@@ -125,26 +176,27 @@ local function detectRotatingLastZone()
 
     local targetObj = nil
 
-    -- 1. Búsqueda prioritaria de ClashStage / Clash Arena
     for _, desc in ipairs(Workspace:GetDescendants()) do
         local l = desc.Name:lower()
         if not desc:IsDescendantOf(LocalPlayer.Character) then
-            if l:match("clashstage") or l:match("clash arena") or l == "clash" then
+            if l:match("evilstage") or l:match("villain") or (l:match("evil") and desc:IsA("Model")) then
+                targetObj = desc
+                detected.name = desc.Name
+                detected.egg = "Evil Egg"
+                detected.status = "👺 ¡VILLAIN'S HIDEOUT ACTIVA!"
+                break
+            elseif l:match("clashstage") or l:match("clash arena") or l == "clash" then
                 targetObj = desc
                 detected.name = desc.Name
                 detected.egg = "Clash Egg"
                 detected.status = "🔥 ¡CLASHSTAGE / ARENA ACTIVA!"
                 break
-            elseif l:match("hero") and not l:match("shinra") then
+            elseif l:match("herostage") or (l:match("hero") and not l:match("shinra")) then
                 targetObj = desc
                 detected.name = desc.Name
                 detected.egg = "Hero Egg"
                 detected.status = "🦸 ¡HERO'S BASE ACTIVA!"
-            elseif l:match("villain") or l:match("evil") or l:match("hideout") then
-                targetObj = desc
-                detected.name = desc.Name
-                detected.egg = "Evil Egg"
-                detected.status = "🦹 ¡VILLAIN'S HIDEOUT ACTIVA!"
+                break
             end
         end
     end
@@ -179,7 +231,7 @@ local function detectRotatingLastZone()
 end
 
 -- ========================================================================
--- DETECTAR HUEVO EN MANO Y SI CORRESPONDE A LA ÚLTIMA ZONA
+-- DETECTAR HUEVO EN MANO
 -- ========================================================================
 local function checkHeldEgg()
     local char = LocalPlayer.Character
@@ -192,7 +244,6 @@ local function checkHeldEgg()
     local eggName = "Ninguno"
     local detailStr = "Manos libres"
 
-    -- 1. Objeto adjunto al Character
     for _, child in ipairs(char:GetChildren()) do
         local l = child.Name:lower()
         if (l:match("egg") or l:match("carry") or l:match("spawned")) and (child:IsA("Model") or child:IsA("BasePart")) then
@@ -203,7 +254,6 @@ local function checkHeldEgg()
         end
     end
 
-    -- 2. Soldaduras (Welds) en extremidades
     if not carrying then
         for _, partName in ipairs({"RightHand", "LeftHand", "Right Arm", "Left Arm", "UpperTorso", "HumanoidRootPart"}) do
             local bodyPart = char:FindFirstChild(partName)
@@ -227,7 +277,6 @@ local function checkHeldEgg()
         end
     end
 
-    -- 3. Pose / Animación CarryPoseController
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     if humanoid then
         local animator = humanoid:FindFirstChildOfClass("Animator")
@@ -237,7 +286,6 @@ local function checkHeldEgg()
                 if animName:match("carry") or animName:match("hold") then
                     carrying = true
                     if eggName == "Ninguno" then
-                        -- Si tenemos la última zona detectada, asumimos su huevo
                         eggName = State.rotatingLastZone.egg or "Huevo en mano"
                     end
                     detailStr = "Pose Carry activa (" .. animName .. ")"
@@ -247,15 +295,14 @@ local function checkHeldEgg()
         end
     end
 
-    -- 4. Comprobar si el huevo en mano es el de la última zona activa
     local isLastZone = false
     if carrying and State.rotatingLastZone.egg ~= "No detectado" then
         local hLower = eggName:lower()
         local targetLower = State.rotatingLastZone.egg:lower()
-        if hLower:match(targetLower) or targetLower:match(hLower) 
-           or (targetLower:match("clash") and (hLower:match("clash") or hLower:match("carry") or hLower:match("huevo")))
-           or (targetLower:match("hero") and hLower:match("hero"))
-           or (targetLower:match("evil") and hLower:match("evil")) then
+        if hLower:match(targetLower) or targetLower:match(hLower)
+           or (targetLower:match("evil") and (hLower:match("evil") or hLower:match("carry") or hLower:match("huevo")))
+           or (targetLower:match("clash") and hLower:match("clash"))
+           or (targetLower:match("hero") and hLower:match("hero")) then
             isLastZone = true
         end
     end
@@ -270,26 +317,7 @@ local function checkHeldEgg()
 end
 
 -- ========================================================================
--- FUNCIÓN: BAJAR AL SUBSUELO (PRUEBAS DE NIVEL DE PISO)
--- ========================================================================
-local function teleportToSubfloor()
-    local char = LocalPlayer.Character
-    if not char then return false end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return false end
-
-    local currentPos = root.Position
-    local floorY, _ = getFloorY(currentPos)
-    local subY = floorY - 3.5 -- 3.5 studs debajo del piso
-
-    pcall(function()
-        root.CFrame = CFrame.new(currentPos.X, subY, currentPos.Z)
-    end)
-    return true, subY
-end
-
--- ========================================================================
--- ESCANEAR TODAS LAS ZONAS Y EVENTOS
+-- ESCANEAR ZONAS Y EVENTOS
 -- ========================================================================
 local function scanAllZonesAndEggs()
     local playerPos = getPlayerPos()
@@ -358,7 +386,7 @@ local function scanAllZonesAndEggs()
 end
 
 -- ========================================================================
--- GUARDADO DE COORDENADAS CON SUBSUELO
+-- GUARDAR POSICIÓN
 -- ========================================================================
 local function saveCurrentPosition()
     local pPos = getPlayerPos()
@@ -391,8 +419,8 @@ local function saveCurrentPosition()
 
     if canCopy then
         pcall(function()
-            local copyText = string.format("Vector3.new(%.2f, %.2f, %.2f) -- Piso Y: %.2f | Subsuelo Y: %.2f (%s | Huevo: %s)",
-                item.x, item.y, item.z, item.floorY, item.subfloorY, item.note, item.heldEgg)
+            local copyText = string.format("Vector3.new(%.2f, %.2f, %.2f) -- Piso Y: %.2f (%s | Huevo: %s)",
+                item.x, item.y, item.z, item.floorY, item.note, item.heldEgg)
             setclipboard(copyText)
         end)
     end
@@ -419,7 +447,7 @@ local function saveCurrentPosition()
 end
 
 -- ========================================================================
--- INTERFAZ GRÁFICA (GUI)
+-- CONSTRUCCIÓN DE LA GUI
 -- ========================================================================
 local function buildGUI()
     local parentGui = (gethui and gethui()) or CoreGui or LocalPlayer:FindFirstChildOfClass("PlayerGui")
@@ -434,8 +462,8 @@ local function buildGUI()
 
     local main = Instance.new("Frame")
     main.Name = "MainFrame"
-    main.Size = UDim2.new(0, 385, 0, 600)
-    main.Position = UDim2.new(0.02, 0, 0.05, 0)
+    main.Size = UDim2.new(0, 385, 0, 610)
+    main.Position = UDim2.new(0.02, 0, 0.04, 0)
     main.BackgroundColor3 = Color3.fromRGB(15, 17, 23)
     main.BorderSizePixel = 2
     main.BorderColor3 = Color3.fromRGB(0, 220, 255)
@@ -443,7 +471,6 @@ local function buildGUI()
     main.Draggable = true
     main.Parent = sg
 
-    -- Barra superior
     local header = Instance.new("Frame")
     header.Size = UDim2.new(1, 0, 0, 34)
     header.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
@@ -457,7 +484,7 @@ local function buildGUI()
     title.TextColor3 = Color3.fromRGB(0, 230, 255)
     title.Font = Enum.Font.SourceSansBold
     title.TextSize = 15
-    title.Text = "🛠️ Inspector Pro: Zonas & Coordenadas"
+    title.Text = "🛠️ Inspector Pro: Zonas & Subsuelo"
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.Parent = header
 
@@ -472,6 +499,9 @@ local function buildGUI()
     closeBtn.Parent = header
     closeBtn.MouseButton1Click:Connect(function()
         State.running = false
+        if State.subPlatform and State.subPlatform.Parent then
+            State.subPlatform:Destroy()
+        end
         sg:Destroy()
     end)
 
@@ -480,7 +510,7 @@ local function buildGUI()
     scroll.Position = UDim2.new(0, 6, 0, 38)
     scroll.BackgroundTransparency = 1
     scroll.ScrollBarThickness = 5
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 970)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 990)
     scroll.Parent = main
 
     local curY = 5
@@ -586,30 +616,43 @@ local function buildGUI()
 
     curY = curY + 112
 
-    -- [4] BOTONES DE ACCIÓN: GUARDAR Y BAJAR AL SUBSUELO
+    -- [4] BOTONES DE SUBSUELO Y GUARDAR
+    local subfloorDownBtn = Instance.new("TextButton")
+    subfloorDownBtn.Size = UDim2.new(0.49, -2, 0, 36)
+    subfloorDownBtn.Position = UDim2.new(0, 0, 0, curY)
+    subfloorDownBtn.BackgroundColor3 = Color3.fromRGB(180, 80, 20)
+    subfloorDownBtn.BorderSizePixel = 0
+    subfloorDownBtn.TextColor3 = Color3.new(1, 1, 1)
+    subfloorDownBtn.Font = Enum.Font.SourceSansBold
+    subfloorDownBtn.TextSize = 12
+    subfloorDownBtn.Text = "⬇️ BAJAR AL SUBSUELO (SEGURO)"
+    subfloorDownBtn.Parent = scroll
+
+    local subfloorUpBtn = Instance.new("TextButton")
+    subfloorUpBtn.Size = UDim2.new(0.49, -2, 0, 36)
+    subfloorUpBtn.Position = UDim2.new(0.51, 2, 0, curY)
+    subfloorUpBtn.BackgroundColor3 = Color3.fromRGB(30, 110, 170)
+    subfloorUpBtn.BorderSizePixel = 0
+    subfloorUpBtn.TextColor3 = Color3.new(1, 1, 1)
+    subfloorUpBtn.Font = Enum.Font.SourceSansBold
+    subfloorUpBtn.TextSize = 12
+    subfloorUpBtn.Text = "⬆️ SUBIR A SUPERFICIE"
+    subfloorUpBtn.Parent = scroll
+
+    curY = curY + 40
+
     local saveBtn = Instance.new("TextButton")
-    saveBtn.Size = UDim2.new(0.68, -4, 0, 36)
+    saveBtn.Size = UDim2.new(1, 0, 0, 36)
     saveBtn.Position = UDim2.new(0, 0, 0, curY)
-    saveBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 120)
+    saveBtn.BackgroundColor3 = Color3.fromRGB(0, 160, 115)
     saveBtn.BorderSizePixel = 0
     saveBtn.TextColor3 = Color3.new(1, 1, 1)
     saveBtn.Font = Enum.Font.SourceSansBold
     saveBtn.TextSize = 13
-    saveBtn.Text = "📌 GUARDAR POSICIÓN Y PISO"
+    saveBtn.Text = "📌 GUARDAR COORDENADAS Y PISO ACTUAL"
     saveBtn.Parent = scroll
 
-    local subfloorBtn = Instance.new("TextButton")
-    subfloorBtn.Size = UDim2.new(0.32, 0, 0, 36)
-    subfloorBtn.Position = UDim2.new(0.68, 2, 0, curY)
-    subfloorBtn.BackgroundColor3 = Color3.fromRGB(180, 80, 20)
-    subfloorBtn.BorderSizePixel = 0
-    subfloorBtn.TextColor3 = Color3.new(1, 1, 1)
-    subfloorBtn.Font = Enum.Font.SourceSansBold
-    subfloorBtn.TextSize = 12
-    subfloorBtn.Text = "⬇️ BAJAR AL SUBSUELO"
-    subfloorBtn.Parent = scroll
-
-    curY = curY + 42
+    curY = curY + 40
 
     local feedbackLabel = Instance.new("TextLabel")
     feedbackLabel.Size = UDim2.new(1, 0, 0, 36)
@@ -744,22 +787,37 @@ local function buildGUI()
         saveBtn.BackgroundColor3 = Color3.fromRGB(0, 210, 140)
         task.delay(1.5, function()
             if saveBtn and saveBtn.Parent then
-                saveBtn.Text = "📌 GUARDAR POSICIÓN Y PISO"
-                saveBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 120)
+                saveBtn.Text = "📌 GUARDAR COORDENADAS Y PISO ACTUAL"
+                saveBtn.BackgroundColor3 = Color3.fromRGB(0, 160, 115)
             end
         end)
     end)
 
-    -- Botón para descender debajo del piso
-    subfloorBtn.MouseButton1Click:Connect(function()
-        local ok, subY = teleportToSubfloor()
+    -- Botón para descender con plataforma física (Anti-Caída)
+    subfloorDownBtn.MouseButton1Click:Connect(function()
+        local ok, targetY = enterSubfloorSafe()
         if ok then
-            subfloorBtn.Text = "✓ BAJADO A " .. string.format("%.1f", subY)
-            subfloorBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 30)
+            subfloorDownBtn.Text = "✓ PARADO A Y: " .. string.format("%.1f", targetY)
+            subfloorDownBtn.BackgroundColor3 = Color3.fromRGB(220, 130, 30)
             task.delay(1.5, function()
-                if subfloorBtn and subfloorBtn.Parent then
-                    subfloorBtn.Text = "⬇️ BAJAR AL SUBSUELO"
-                    subfloorBtn.BackgroundColor3 = Color3.fromRGB(180, 80, 20)
+                if subfloorDownBtn and subfloorDownBtn.Parent then
+                    subfloorDownBtn.Text = "⬇️ BAJAR AL SUBSUELO (SEGURO)"
+                    subfloorDownBtn.BackgroundColor3 = Color3.fromRGB(180, 80, 20)
+                end
+            end)
+        end
+    end)
+
+    -- Botón para regresar a la superficie
+    subfloorUpBtn.MouseButton1Click:Connect(function()
+        local ok, targetY = exitSubfloorSafe()
+        if ok then
+            subfloorUpBtn.Text = "✓ EN SUPERFICIE"
+            subfloorUpBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 220)
+            task.delay(1.5, function()
+                if subfloorUpBtn and subfloorUpBtn.Parent then
+                    subfloorUpBtn.Text = "⬆️ SUBIR A SUPERFICIE"
+                    subfloorUpBtn.BackgroundColor3 = Color3.fromRGB(30, 110, 170)
                 end
             end)
         end
@@ -778,19 +836,18 @@ local function buildGUI()
                 local subY = floorY - 3.5
                 local held = checkHeldEgg()
 
-                -- Actualizar posición, piso y subsuelo
+                local statusSub = State.isUnderground and " [⚠️ EN SUBSUELO SEGURO]" or ""
                 s2Text.Text = string.format(
-                    "• Posición Cuerpo (Y): %.2f  (X: %.2f, Z: %.2f)\n" ..
+                    "• Posición Cuerpo (Y): %.2f%s  (X: %.2f, Z: %.2f)\n" ..
                     "• Nivel Superficie Piso: Y = %.2f (%s)\n" ..
                     "• Nivel Subsuelo Estimado: Y = %.2f\n" ..
                     "• Distancia a Última Zona: %d studs",
-                    pos.Y, pos.X, pos.Z,
+                    pos.Y, statusSub, pos.X, pos.Z,
                     floorY, floorPart,
                     subY,
                     State.rotatingLastZone.distance or 0
                 )
 
-                -- Actualizar estado de huevo en mano con alerta especial
                 if held.isCarrying then
                     if held.isFromLastZone then
                         carryText.Text = string.format("⭐ ¡¡TIENES EL HUEVO DE LA ÚLTIMA ZONA!! ⭐\n• Huevo: %s (de %s)\n• Detalle: %s",
@@ -817,7 +874,7 @@ local function buildGUI()
 
     performScan()
     sg.Parent = parentGui
-    print("✅ Panel Inspector Pro actualizado con detector de huevo de última zona y subsuelo.")
+    print("✅ Panel Inspector Pro actualizado con soporte anti-caída de subsuelo.")
 end
 
 buildGUI()
