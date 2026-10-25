@@ -33,6 +33,13 @@ local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    local startWait = tick()
+    repeat
+        task.wait(0.1)
+        LocalPlayer = Players.LocalPlayer
+    until LocalPlayer or (tick() - startWait > 8)
+end
 local canWrite = (type(writefile) == "function")
 local canCopy = (type(setclipboard) == "function")
 
@@ -130,9 +137,8 @@ local function startSubfloorPlatformFollow()
         State.subPlatformFollow = nil
     end
 
-    -- PreSimulation ocurre antes de la física. Heartbeat es el respaldo para
-    -- clientes que no expongan ese evento.
-    local followSignal = RunService.PreSimulation or RunService.Heartbeat
+    -- Heartbeat es universal y compatible con todos los ejecutores y versiones.
+    local followSignal = RunService.Heartbeat
     State.subPlatformFollow = followSignal:Connect(function()
         local platform = State.subPlatform
         if not State.isUnderground or not platform or not platform.Parent then
@@ -255,10 +261,12 @@ local function moveToSubfloorSafe(targetPos)
 end
 
 -- No deja plataformas o conexiones huérfanas después de reaparecer.
-LocalPlayer.CharacterAdded:Connect(function()
-    State.isUnderground = false
-    stopSubfloorPlatform()
-end)
+if LocalPlayer then
+    LocalPlayer.CharacterAdded:Connect(function()
+        State.isUnderground = false
+        stopSubfloorPlatform()
+    end)
+end
 
 -- ========================================================================
 -- DETECTAR ÚLTIMA ZONA ROTATIVA
@@ -274,10 +282,11 @@ local function detectRotatingLastZone()
     }
 
     local targetObj = nil
+    local myChar = LocalPlayer and LocalPlayer.Character
 
     for _, desc in ipairs(Workspace:GetDescendants()) do
         local l = desc.Name:lower()
-        if not desc:IsDescendantOf(LocalPlayer.Character) then
+        if not myChar or not desc:IsDescendantOf(myChar) then
             if l:match("evilstage") or l:match("villain") or (l:match("evil") and desc:IsA("Model")) then
                 targetObj = desc
                 detected.name = desc.Name
@@ -468,8 +477,9 @@ local function scanAllZonesAndEggs()
 
     local fires = 0
     local pumpkins = 0
+    local myChar = LocalPlayer and LocalPlayer.Character
     for _, d in ipairs(Workspace:GetDescendants()) do
-        if not d:IsDescendantOf(LocalPlayer.Character) then
+        if not myChar or not d:IsDescendantOf(myChar) then
             local l = d.Name:lower()
             if l:match("fire") or l:match("fuego") then
                 if d:IsA("BasePart") or (d:IsA("Model") and d.PrimaryPart) then fires = fires + 1 end
@@ -549,15 +559,55 @@ end
 -- CONSTRUCCIÓN DE LA GUI
 -- ========================================================================
 local function buildGUI()
-    local parentGui = (gethui and gethui()) or CoreGui or LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if not parentGui then return end
-
-    local old = parentGui:FindFirstChild("DevZonesProUI")
-    if old then old:Destroy() end
+    -- Limpieza previa segura en gethui, CoreGui y PlayerGui
+    pcall(function()
+        if type(gethui) == "function" and gethui():FindFirstChild("DevZonesProUI") then
+            gethui().DevZonesProUI:Destroy()
+        end
+    end)
+    pcall(function()
+        if CoreGui and CoreGui:FindFirstChild("DevZonesProUI") then
+            CoreGui.DevZonesProUI:Destroy()
+        end
+    end)
+    pcall(function()
+        if LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("DevZonesProUI") then
+            LocalPlayer.PlayerGui.DevZonesProUI:Destroy()
+        end
+    end)
 
     local sg = Instance.new("ScreenGui")
     sg.Name = "DevZonesProUI"
     sg.ResetOnSpawn = false
+    sg.DisplayOrder = 9999
+    pcall(function() sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling end)
+
+    -- Asignación inmediata del contenedor con fallbacks a prueba de fallos
+    local parented = false
+    pcall(function()
+        if type(gethui) == "function" then
+            local h = gethui()
+            if h then
+                sg.Parent = h
+                parented = (sg.Parent == h)
+            end
+        end
+    end)
+    if not parented then
+        pcall(function()
+            sg.Parent = CoreGui
+            parented = (sg.Parent == CoreGui)
+        end)
+    end
+    if not parented and LocalPlayer then
+        pcall(function()
+            local pg = LocalPlayer:WaitForChild("PlayerGui", 5) or LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:FindFirstChildOfClass("PlayerGui")
+            if pg then
+                sg.Parent = pg
+                parented = (sg.Parent == pg)
+            end
+        end)
+    end
 
     local main = Instance.new("Frame")
     main.Name = "MainFrame"
@@ -1006,11 +1056,15 @@ local function buildGUI()
         end
     end)
 
-    performScan()
-    sg.Parent = parentGui
-    print("✅ Panel Inspector Pro actualizado con soporte anti-caída de subsuelo.")
+    pcall(function()
+        performScan()
+    end)
+    print("✅ Panel Inspector Pro iniciado correctamente con soporte anti-caída de subsuelo.")
 end
 
-buildGUI()
+local ok, err = pcall(buildGUI)
+if not ok then
+    warn("❌ Error al iniciar Panel Inspector Pro:", tostring(err))
+end
 
 
