@@ -33,13 +33,6 @@ local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
-if not LocalPlayer then
-    local startWait = tick()
-    repeat
-        task.wait(0.1)
-        LocalPlayer = Players.LocalPlayer
-    until LocalPlayer or (tick() - startWait > 8)
-end
 local canWrite = (type(writefile) == "function")
 local canCopy = (type(setclipboard) == "function")
 
@@ -63,9 +56,7 @@ local State = {
         details = "Manos libres",
         isFromLastZone = false
     },
-    autoMoveOnLastZoneEgg = true,
-    lastZoneEggMoved = false,
-    targetLastZoneEggPos = Vector3.new(-31.87, -2.40, 3488.73),
+    hasMovedEgg = false,
     godlyEgg = { found = false, info = "Buscando..." },
     halloween = { fires = 0, pumpkins = 0 },
     lastSavedFeedback = "Ninguna posición guardada aún."
@@ -137,8 +128,9 @@ local function startSubfloorPlatformFollow()
         State.subPlatformFollow = nil
     end
 
-    -- Heartbeat es universal y compatible con todos los ejecutores y versiones.
-    local followSignal = RunService.Heartbeat
+    -- PreSimulation ocurre antes de la física. Heartbeat es el respaldo para
+    -- clientes que no expongan ese evento.
+    local followSignal = RunService.PreSimulation or RunService.Heartbeat
     State.subPlatformFollow = followSignal:Connect(function()
         local platform = State.subPlatform
         if not State.isUnderground or not platform or not platform.Parent then
@@ -214,59 +206,11 @@ local function exitSubfloorSafe()
     return true, 3.50
 end
 
-local function moveToSubfloorSafe(targetPos)
-    local char = LocalPlayer.Character
-    if not char then return false, "Sin Personaje" end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return false, "Sin RootPart" end
-
-    targetPos = targetPos or State.targetLastZoneEggPos or Vector3.new(-31.87, -2.40, 3488.73)
-    local platY = -6.00 -- Nivel de soporte para mantener el cuerpo a Y = -2.40
-
-    -- Si no está en subsuelo o no tiene plataforma activa, crearla y activar seguimiento
-    if not State.isUnderground or not State.subPlatform or not State.subPlatform.Parent then
-        stopSubfloorPlatform()
-
-        local plat = Instance.new("Part")
-        plat.Name = "Dev_Plataforma_Soporte_Subsuelo"
-        plat.Size = Vector3.new(48, 1, 48)
-        plat.CFrame = CFrame.new(targetPos.X, platY, targetPos.Z)
-        plat.Anchored = true
-        plat.CanCollide = true
-        plat.CanQuery = true
-        plat.CanTouch = true
-        plat.Material = Enum.Material.Neon
-        plat.Color = Color3.fromRGB(0, 220, 255)
-        plat.Transparency = 0.35
-        plat.CastShadow = false
-        plat.Parent = Workspace
-
-        State.subPlatform = plat
-        State.isUnderground = true
-        startSubfloorPlatformFollow()
-    else
-        -- Si ya existía, mover la plataforma inmediatamente bajo el destino
-        State.subPlatform.CFrame = CFrame.new(targetPos.X, platY, targetPos.Z)
-    end
-
-    -- Cancelar velocidades para evitar deslizamientos o caídas
-    pcall(function()
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
-    end)
-
-    -- Mover al personaje a las coordenadas exactas solicitadas
-    root.CFrame = CFrame.new(targetPos)
-    return true
-end
-
 -- No deja plataformas o conexiones huérfanas después de reaparecer.
-if LocalPlayer then
-    LocalPlayer.CharacterAdded:Connect(function()
-        State.isUnderground = false
-        stopSubfloorPlatform()
-    end)
-end
+LocalPlayer.CharacterAdded:Connect(function()
+    State.isUnderground = false
+    stopSubfloorPlatform()
+end)
 
 -- ========================================================================
 -- DETECTAR ÚLTIMA ZONA ROTATIVA
@@ -282,11 +226,10 @@ local function detectRotatingLastZone()
     }
 
     local targetObj = nil
-    local myChar = LocalPlayer and LocalPlayer.Character
 
     for _, desc in ipairs(Workspace:GetDescendants()) do
         local l = desc.Name:lower()
-        if not myChar or not desc:IsDescendantOf(myChar) then
+        if not desc:IsDescendantOf(LocalPlayer.Character) then
             if l:match("evilstage") or l:match("villain") or (l:match("evil") and desc:IsA("Model")) then
                 targetObj = desc
                 detected.name = desc.Name
@@ -408,9 +351,9 @@ local function checkHeldEgg()
         local hLower = eggName:lower()
         local targetLower = State.rotatingLastZone.egg:lower()
         if hLower:match(targetLower) or targetLower:match(hLower)
-           or ((targetLower:match("evil") or targetLower:match("clash") or targetLower:match("hero")) 
-               and (hLower:match("evil") or hLower:match("clash") or hLower:match("hero") or hLower:match("carry") or hLower:match("huevo") or hLower:match("egg") or hLower:match("spawned")))
-           or (State.rotatingLastZone.distance and State.rotatingLastZone.distance <= 150) then
+           or (targetLower:match("evil") and (hLower:match("evil") or hLower:match("carry") or hLower:match("huevo")))
+           or (targetLower:match("clash") and hLower:match("clash"))
+           or (targetLower:match("hero") and hLower:match("hero")) then
             isLastZone = true
         end
     end
@@ -477,9 +420,8 @@ local function scanAllZonesAndEggs()
 
     local fires = 0
     local pumpkins = 0
-    local myChar = LocalPlayer and LocalPlayer.Character
     for _, d in ipairs(Workspace:GetDescendants()) do
-        if not myChar or not d:IsDescendantOf(myChar) then
+        if not d:IsDescendantOf(LocalPlayer.Character) then
             local l = d.Name:lower()
             if l:match("fire") or l:match("fuego") then
                 if d:IsA("BasePart") or (d:IsA("Model") and d.PrimaryPart) then fires = fires + 1 end
@@ -559,55 +501,15 @@ end
 -- CONSTRUCCIÓN DE LA GUI
 -- ========================================================================
 local function buildGUI()
-    -- Limpieza previa segura en gethui, CoreGui y PlayerGui
-    pcall(function()
-        if type(gethui) == "function" and gethui():FindFirstChild("DevZonesProUI") then
-            gethui().DevZonesProUI:Destroy()
-        end
-    end)
-    pcall(function()
-        if CoreGui and CoreGui:FindFirstChild("DevZonesProUI") then
-            CoreGui.DevZonesProUI:Destroy()
-        end
-    end)
-    pcall(function()
-        if LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild("DevZonesProUI") then
-            LocalPlayer.PlayerGui.DevZonesProUI:Destroy()
-        end
-    end)
+    local parentGui = (gethui and gethui()) or CoreGui or LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not parentGui then return end
+
+    local old = parentGui:FindFirstChild("DevZonesProUI")
+    if old then old:Destroy() end
 
     local sg = Instance.new("ScreenGui")
     sg.Name = "DevZonesProUI"
     sg.ResetOnSpawn = false
-    sg.DisplayOrder = 9999
-    pcall(function() sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling end)
-
-    -- Asignación inmediata del contenedor con fallbacks a prueba de fallos
-    local parented = false
-    pcall(function()
-        if type(gethui) == "function" then
-            local h = gethui()
-            if h then
-                sg.Parent = h
-                parented = (sg.Parent == h)
-            end
-        end
-    end)
-    if not parented then
-        pcall(function()
-            sg.Parent = CoreGui
-            parented = (sg.Parent == CoreGui)
-        end)
-    end
-    if not parented and LocalPlayer then
-        pcall(function()
-            local pg = LocalPlayer:WaitForChild("PlayerGui", 5) or LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:FindFirstChildOfClass("PlayerGui")
-            if pg then
-                sg.Parent = pg
-                parented = (sg.Parent == pg)
-            end
-        end)
-    end
 
     local main = Instance.new("Frame")
     main.Name = "MainFrame"
@@ -658,7 +560,7 @@ local function buildGUI()
     scroll.Position = UDim2.new(0, 6, 0, 38)
     scroll.BackgroundTransparency = 1
     scroll.ScrollBarThickness = 5
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 1040)
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 990)
     scroll.Parent = main
 
     local curY = 5
@@ -799,19 +701,6 @@ local function buildGUI()
     saveBtn.TextSize = 13
     saveBtn.Text = "📌 GUARDAR COORDENADAS Y PISO ACTUAL"
     saveBtn.Parent = scroll
-
-    curY = curY + 40
-
-    local tpSafeBtn = Instance.new("TextButton")
-    tpSafeBtn.Size = UDim2.new(1, 0, 0, 36)
-    tpSafeBtn.Position = UDim2.new(0, 0, 0, curY)
-    tpSafeBtn.BackgroundColor3 = Color3.fromRGB(130, 45, 175)
-    tpSafeBtn.BorderSizePixel = 0
-    tpSafeBtn.TextColor3 = Color3.new(1, 1, 1)
-    tpSafeBtn.Font = Enum.Font.SourceSansBold
-    tpSafeBtn.TextSize = 12
-    tpSafeBtn.Text = "⚡ IR A SUBSUELO ÚLTIMA ZONA (-31.87, -2.40, 3488.73)"
-    tpSafeBtn.Parent = scroll
 
     curY = curY + 40
 
@@ -984,21 +873,6 @@ local function buildGUI()
         end
     end)
 
-    -- Botón para ir al subsuelo seguro de la última zona
-    tpSafeBtn.MouseButton1Click:Connect(function()
-        local ok = moveToSubfloorSafe(State.targetLastZoneEggPos)
-        if ok then
-            tpSafeBtn.Text = "✓ MOVIDO A SUBSUELO SEGURO!"
-            tpSafeBtn.BackgroundColor3 = Color3.fromRGB(170, 60, 230)
-            task.delay(1.5, function()
-                if tpSafeBtn and tpSafeBtn.Parent then
-                    tpSafeBtn.Text = "⚡ IR A SUBSUELO ÚLTIMA ZONA (-31.87, -2.40, 3488.73)"
-                    tpSafeBtn.BackgroundColor3 = Color3.fromRGB(130, 45, 175)
-                end
-            end)
-        end
-    end)
-
     refreshBtn.MouseButton1Click:Connect(function()
         performScan()
     end)
@@ -1026,15 +900,23 @@ local function buildGUI()
 
                 if held.isCarrying then
                     if held.isFromLastZone then
-                        -- Auto mover al subsuelo seguro (-31.87, -2.40, 3488.73)
-                        if State.autoMoveOnLastZoneEgg and not State.lastZoneEggMoved then
-                            State.lastZoneEggMoved = true
-                            moveToSubfloorSafe(State.targetLastZoneEggPos)
+                        if not State.hasMovedEgg then
+                            State.hasMovedEgg = true
+                            local char = LocalPlayer.Character
+                            local root = char and char:FindFirstChild("HumanoidRootPart")
+                            if root then
+                                if not State.isUnderground then
+                                    enterSubfloorSafe()
+                                end
+                                if State.subPlatform then
+                                    State.subPlatform.CFrame = CFrame.new(-31.87, -6.00, 3488.73)
+                                end
+                                root.CFrame = CFrame.new(-31.87, -2.40, 3488.73)
+                            end
                         end
 
-                        carryText.Text = string.format("⭐ ¡¡TIENES EL HUEVO DE LA ÚLTIMA ZONA!! ⭐\n• Movido a Subsuelo: (X: %.2f, Y: %.2f, Z: %.2f)\n• Huevo: %s (de %s)",
-                            State.targetLastZoneEggPos.X, State.targetLastZoneEggPos.Y, State.targetLastZoneEggPos.Z,
-                            held.name, State.rotatingLastZone.name)
+                        carryText.Text = string.format("⭐ ¡¡TIENES EL HUEVO DE LA ÚLTIMA ZONA!! ⭐\n• Huevo: %s (de %s)\n• Detalle: %s",
+                            held.name, State.rotatingLastZone.name, held.details)
                         carryText.TextColor3 = Color3.fromRGB(255, 230, 50)
                         carryBox.BackgroundColor3 = Color3.fromRGB(45, 40, 15)
                         carryBox.BorderColor3 = Color3.fromRGB(255, 215, 0)
@@ -1045,7 +927,7 @@ local function buildGUI()
                         carryBox.BorderColor3 = Color3.fromRGB(0, 255, 170)
                     end
                 else
-                    State.lastZoneEggMoved = false
+                    State.hasMovedEgg = false
                     carryText.Text = "• Estado: Manos libres (Sin huevo en mano)\n• Acércate al nido y pulsa [E] para tomarlo."
                     carryText.TextColor3 = Color3.fromRGB(180, 220, 210)
                     carryBox.BackgroundColor3 = Color3.fromRGB(20, 28, 40)
@@ -1056,15 +938,9 @@ local function buildGUI()
         end
     end)
 
-    pcall(function()
-        performScan()
-    end)
-    print("✅ Panel Inspector Pro iniciado correctamente con soporte anti-caída de subsuelo.")
+    performScan()
+    sg.Parent = parentGui
+    print("✅ Panel Inspector Pro actualizado con soporte anti-caída de subsuelo.")
 end
 
-local ok, err = pcall(buildGUI)
-if not ok then
-    warn("❌ Error al iniciar Panel Inspector Pro:", tostring(err))
-end
-
-
+buildGUI()
